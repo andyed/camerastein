@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camerastein — Body Signal Detection</title>
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+    <!-- Controls bar -->
+    <div id="controls-bar">
+        <h1>camerastein</h1>
+        <button class="toggle-btn" id="btn-head" data-mode="head">Head</button>
+        <button class="toggle-btn" id="btn-body" data-mode="body">Body</button>
+        <button class="toggle-btn" id="btn-hand" data-mode="hand">Hand</button>
+        <select id="camera-select"><option value="">Camera...</option></select>
+        <span id="mode-indicator"></span>
+        <span id="error-display"></span>
+        <span id="fps-display">-- fps</span>
+        <button id="benchmark-toggle">bench</button>
+    </div>
+
+    <!-- Main visualization area -->
+    <div id="main-area">
+        <video id="video-feed" autoplay playsinline muted></video>
+        <canvas id="skeleton-canvas"></canvas>
+    </div>
+
+    <!-- Timeline strip -->
+    <div id="timeline-strip">
+        <canvas id="timeline-canvas"></canvas>
+    </div>
+
+    <!-- Benchmark panel -->
+    <div id="benchmark-panel" class="collapsed"></div>
+
+    <!-- Detection library (copied verbatim from psychodeli-webgl-port) -->
+    <script src="js/lib/motion-bus.js"></script>
+    <script src="js/lib/mediapipe-base-loader.js"></script>
+    <script src="js/lib/mediapipe-loader.js"></script>
+    <script src="js/lib/pose-loader.js"></script>
+    <script src="js/lib/hands-loader.js"></script>
+    <script src="js/lib/shared-camera-manager.js"></script>
+    <script src="js/lib/head-bob-detector.js"></script>
+    <script src="js/lib/head-bob-detector-mouth-tracking.js"></script>
+    <script src="js/lib/body-motion-detector.js"></script>
+    <script src="js/lib/hand-pose-detector.js"></script>
+
+    <!-- DI wiring: ?tasks-vision uses new API, default uses legacy -->
+    <script>
+        if (new URLSearchParams(location.search).has('tasks-vision')) {
+            // Tasks Vision: init is an ES module (dynamic imports)
+            const s = document.createElement('script');
+            s.type = 'module';
+            s.src = 'js/init-tasks-vision.js';
+            document.head.appendChild(s);
+        } else {
+            // Legacy: init is a plain script (IIFE)
+            const s = document.createElement('script');
+            s.src = 'js/init.js';
+            document.head.appendChild(s);
+        }
+    </script>
+
+    <!-- App modules -->
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>

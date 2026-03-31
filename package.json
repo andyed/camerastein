@@ -1,0 +1,13 @@
+{
+  "name": "camerastein",
+  "version": "0.1.0",
+  "description": "Camera body signal detection platform — head, body, hands via MediaPipe",
+  "private": true,
+  "scripts": {
+    "start": "npx http-server -p 8081 -c-1",
+    "dev": "npx http-server -p 8081 -c-1 -o"
+  },
+  "keywords": ["mediapipe", "motion-detection", "body-tracking", "hand-tracking", "face-tracking"],
+  "author": "Andy Edmonds",
+  "license": "MIT"
+}

@@ -1,0 +1,186 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    background: #0a0a0f;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    overflow: hidden;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+/* ── Controls bar (top) ── */
+#controls-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: rgba(20, 20, 30, 0.95);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    z-index: 100;
+    flex-shrink: 0;
+}
+
+#controls-bar h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #4ecdc4;
+    margin-right: 8px;
+    letter-spacing: -0.5px;
+}
+
+.toggle-btn {
+    padding: 6px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    color: #aaa;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+    user-select: none;
+}
+
+.toggle-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #ddd;
+}
+
+.toggle-btn.active {
+    background: rgba(78, 205, 196, 0.2);
+    border-color: #4ecdc4;
+    color: #4ecdc4;
+}
+
+.toggle-btn.active::before {
+    content: '';
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #4ecdc4;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+
+#camera-select {
+    padding: 5px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    color: #ccc;
+    font-size: 12px;
+    max-width: 180px;
+}
+
+#fps-display {
+    margin-left: auto;
+    font-size: 12px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    color: #666;
+}
+
+#mode-indicator {
+    font-size: 12px;
+    color: #666;
+}
+
+#error-display {
+    font-size: 12px;
+    color: #ff6b6b;
+    display: none;
+}
+
+/* ── Main canvas area ── */
+#main-area {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+}
+
+#video-feed {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    transform: scaleX(-1); /* selfie mirror */
+    opacity: 0.3;
+}
+
+#skeleton-canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Timeline strip (bottom) ── */
+#timeline-strip {
+    height: 120px;
+    background: rgba(20, 20, 30, 0.95);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    flex-shrink: 0;
+    position: relative;
+}
+
+#timeline-canvas {
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Benchmark panel (right, collapsible) ── */
+#benchmark-panel {
+    position: fixed;
+    top: 50px;
+    right: 0;
+    width: 280px;
+    max-height: calc(100vh - 180px);
+    background: rgba(15, 15, 25, 0.95);
+    border-left: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 0 0 0 8px;
+    padding: 12px;
+    font-size: 11px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    overflow-y: auto;
+    z-index: 90;
+    transition: transform 0.2s;
+}
+
+#benchmark-panel.collapsed {
+    transform: translateX(100%);
+}
+
+#benchmark-toggle {
+    position: fixed;
+    top: 54px;
+    right: 8px;
+    z-index: 91;
+    padding: 4px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    color: #888;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.bench-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 3px 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.bench-label { color: #888; }
+.bench-value { color: #4ecdc4; }
+.bench-section {
+    color: #666;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-top: 10px;
+    margin-bottom: 4px;
+}
