@@ -131,6 +131,11 @@ The `js/lib/` detection files are shared with [Psychodeli+](https://psychodeli.c
 
 Changes flow upstream: improvements made here get merged back into Psychodeli+.
 
+## Further Reading
+
+- [Related Projects & Libraries](docs/RELATED_PROJECTS.md) — open source projects, UX patterns, and platform adoption of camera-based input
+- [Testing Plan](docs/TESTING_PLAN.md) — video replay testing, signal comparison, benchmark regression
+
 ## License
 
 MIT
