@@ -7,7 +7,7 @@
  * Uses SharedCameraManager for instant switching with HeadBobDetector.
  * Both models stay loaded (~7MB total) for seamless mode changes.
  *
- * Mutually exclusive with head tracking (*) - activated via & key.
+ * Mutually exclusive with head tracking (&) - activated via * key (Shift+8).
  *
  * @see docs/BODY_MOTION_SPEC.md
  */

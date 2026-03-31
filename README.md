@@ -127,7 +127,7 @@ Export as JSON for comparison across devices/browsers.
 
 ## Relationship to Psychodeli+
 
-The `js/lib/` detection files are copied verbatim from [psychodeli-webgl-port](https://github.com/andyed/psychodeli-webgl-port). In Psychodeli+, these detectors feed an AI director that maps body movement to real-time fractal visuals. Here they run standalone for testing and development.
+The `js/lib/` detection files are shared with [Psychodeli+](https://psychodeli.com) (closed source). In Psychodeli+, these detectors feed an AI director that maps body movement to real-time fractal visuals. Here they run standalone for testing and development.
 
 Changes flow upstream: improvements made here get merged back into Psychodeli+.
 

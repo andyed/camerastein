@@ -124,159 +124,94 @@ Open source projects with permissive licenses relevant to camerastein's developm
 - **API:** Web Component (`<vitallens-scan>`) and programmatic (`new VitalLens()`)
 - **Status:** March 2026, actively maintained
 - **Camerastein relevance:** Physiological signal detection from the same camera feed. Stress, engagement, arousal detection. Could feed into MotionBus as a new channel.
-- **Psychodeli+ relevance:** Heart rate and stress reactivity as audio-visual input signals. Imagine visuals that respond to your heart rate syncing with the beat. The rPPG algorithms work from the same face mesh landmarks we already capture.
+- **Audio-visual relevance:** Heart rate and stress reactivity as input signals for interactive experiences. The rPPG algorithms work from the same face mesh landmarks we already capture.
 
 ### understanding-mediapipe-facemesh-output
 - **Repo:** https://github.com/lschmelzeisen/understanding-mediapipe-facemesh-output
 - **Use:** Reference for which of the 468 face landmarks correspond to which facial features. Useful for building simplified face visualizations and expression extraction.
 
-## Audio Generation & Adaptive Music (for MindState app)
 
-These projects are relevant to the MindState biofeedback meditation app concept (see `psychodeli-webgl-port/docs/MINDSTATE_APP_SPEC.md`), which combines Psychodeli visuals + generated music + camera-based vitals for guided mental state transitions.
+## Adoption of Camera for User Input
 
-### Tier 1 — Foundation Stack
+Camera-based input is crossing from accessibility niche into mainstream platform feature. The signal processing camerastein already does (head orientation, hand landmarks, body pose) is the same foundation these systems build on.
 
-#### Tone.js
-- **Repo:** https://github.com/Tonejs/Tone.js
-- **License:** MIT | **Stars:** ~14,700
-- **Use:** The dominant Web Audio framework. Scheduling, synthesis, effects, transport. Build generative sequences on top of Tone.Transport. Map biofeedback to filter cutoff, tempo, reverb mix, note density. Does not compose for you — you write the generative logic, it handles the audio graph.
+### Platform-level adoption
+
+Apple ships camera input as a first-party accessibility feature on both platforms:
+- **macOS Head Pointer** (since Catalina 10.15.4) — head tracking via built-in camera, dwell-click, adjustable sensitivity
+- **iOS 18 Eye Tracking** — gaze-based cursor + dwell-click via front camera, iPhone 12+, all on-device
+
+This signals that camera-as-input-device is no longer experimental — it's an OS primitive.
+
+### Open source projects
+
+#### OptiKey
+- **Repo:** https://github.com/OptiKey/OptiKey
+- **License:** GPL-3.0 | **Stars:** ~4,400
+- **Use:** Full keyboard + mouse via eye tracking (Tobii + webcam fallback). Built for ALS/MND users. Dwell-click with visual progress ring. Mature, actively maintained.
 - **Status:** Active (March 2026)
 
-#### Tonal.js
-- **Repo:** https://github.com/tonaljs/tonal
-- **License:** npm packages | **Stars:** ~4,100
-- **Use:** Pure functional music theory. Notes, intervals, chords, scales, modes, keys, progressions, roman numeral analysis. Constrain generative note selection to calming scales (Dorian for calm, Mixolydian for energy, Aeolian for sleep). Map biofeedback to harmonic movement.
-- **Status:** Active (January 2026)
+#### WebGazer.js (Brown University)
+- **Repo:** https://github.com/brownhci/WebGazer
+- **License:** Custom | **Stars:** ~3,800
+- **Use:** Browser-native gaze estimation. Self-calibrates by watching where users click. Provides x,y gaze coordinates via `setGazeListener()`. Published in IJCAI. All processing client-side.
+- **Status:** Active (March 2026)
+- **Relevance:** The browser gaze library. Could layer on top of camerastein's FaceMesh detection.
 
-#### Scribbletune
-- **Repo:** https://github.com/scribbletune/scribbletune
-- **License:** MIT | **Stars:** ~3,800
-- **Use:** Create music with simple strings and arrays. Rhythm patterns as strings (`"x-x-x---"`), chord progressions, clip-based composition. Uses Tonal.js internally, plays via Tone.js. Parameterize pattern density based on biofeedback.
+#### Tracky Mouse
+- **Repo:** https://github.com/1j01/tracky-mouse
+- **License:** MIT | **Stars:** ~58
+- **Use:** Head tracking for cursor control. Electron app + embeddable JS library. Hybrid approach: blends optical flow point tracking (responsive, drifts) with 3D head tilt estimation (drift-free, jittery) via a user-adjustable slider. Best UX documentation of any project in this space.
+- **Status:** Active (March 2026)
+- **Relevance:** The hybrid tracking approach and smoothing patterns are directly applicable to any input mapping from camerastein's head signals.
+
+#### Project Gameface (Google)
+- **Repo:** https://github.com/google/project-gameface
+- **License:** Apache 2.0 | **Stars:** ~624
+- **Use:** Head movement + facial gestures (eyebrow raise, mouth open) via MediaPipe. Co-designed with quadriplegic gamer Lance Carr. Adjustable "gesture size" dead zone.
+- **Status:** Archived September 2025
+
+#### Gesture-Controlled Virtual Mouse
+- **Repo:** https://github.com/Viral-Doshi/Gesture-Controlled-Virtual-Mouse
+- **License:** GPL-3.0 | **Stars:** ~776
+- **Use:** Hand gestures via MediaPipe for cursor, click, drag, scroll, volume, brightness. Most fully-featured hand gesture project. Also includes voice assistant.
 - **Status:** Active (March 2026)
 
-#### Generative.fm / @generative-music
-- **Repo:** https://github.com/generativefm/generative.fm (archived) + https://github.com/generativefm/generators
-- **License:** MIT | **Stars:** ~1,590 + ~564
-- **Use:** Alex Bainter's ~35 ambient generative pieces built on Tone.js. Each is a self-contained generator creating infinite, non-repeating ambient music. Brian Eno-style ambient to drone to melodic. **The single best reference architecture for building generative ambient sequences.** Fork individual generators and add biofeedback parameter inputs.
-- **Status:** Archived (2021), but pattern library is gold
+#### PolyMouse (research)
+- **Repo:** https://github.com/trishume/PolyMouse
+- **Stars:** ~51
+- **Use:** Sensor fusion — combines eye gaze (fast, coarse) with head tracking (slow, precise). Eye gets you to the neighborhood, head gets you to the pixel. Best research on hybrid input approaches.
 
-### Tier 2 — Adaptive Systems
+### Commercial products
 
-#### iMusicXML
-- **Repo:** https://github.com/hanslindetorp/iMusicXML
-- **License:** MIT | **Stars:** ~6
-- **Use:** XML syntax + JS parser for adaptive music in HTML. Arrange, loop, randomize, play sections/stems/motifs in sync. Built for vertical layering + horizontal re-sequencing. Define calm/focus/energize stem sets, crossfade layers based on biofeedback. Developed at Royal College of Music, Stockholm.
-- **Status:** September 2025
+| Product | Control Method | Platform | Price | Notes |
+|---------|---------------|----------|-------|-------|
+| **Talon Voice** | Voice + Tobii eye tracker | Mac/Linux/Windows | Free (Patreon) | Gold standard for hands-free coding. Used by developers with RSI. Requires Tobii hardware. |
+| **Cephable** | Head + face + voice (all webcam) | All platforms | Free personal | Most polished consumer product. All on-device. No programming needed for custom actions. |
+| **Smyle Mouse** | Head + smile-to-click | Windows | Commercial | 10+ years of refinement. Patented. Professional productivity focus. |
+| **SensePilot** | Face + gesture + speech | Cross-platform | $30/mo trial | Multiple accessibility awards (2024-2026). Adapts to user's range of motion. |
+| **Neural Lab AirTouch** | 3D hand gestures + gaze intent | Win/Android/Linux | $30/mo | CES 2025. Uses gaze to filter intentional vs. incidental gestures. |
+| **Camera Mouse** (Boston College) | Head tracking | Windows | Free | 3.3M+ downloads. Standard recommendation for motor-impaired users. |
 
-#### barelymusician
-- **Repo:** https://github.com/anokta/barelymusician
-- **License:** MIT | **Stars:** ~38
-- **Use:** Real-time adaptive music engine in C/C++. Smooth transitions between musical patterns for varying emotional states. Unity/VST/native targets. Not directly browser-usable, but the academic paper describes exactly the emotional-state-to-music-transition problem. Architecture patterns are highly relevant.
-- **Status:** Active (March 2026)
+### UX patterns for camera input
 
-#### React Native Audio API
-- **Repo:** https://github.com/software-mansion/react-native-audio-api
-- **License:** MIT | **Stars:** ~729
-- **Use:** Web Audio API implemented natively for React Native. Same API surface as browser Web Audio, runs on native iOS/Android. Write generative audio logic once (Tone.js-style), run cross-platform.
-- **Status:** Very active (March 2026)
+**Jitter control:** One Euro Filter is the consensus approach (MediaPipe uses it internally). Adaptive cutoff: aggressive smoothing when still, minimal lag when moving. Parameters: `min_cutoff` (stationary jitter), `beta` (movement lag tradeoff).
 
-### Tier 3 — ML/AI Music Generation
+**Dead zones:** Joystick-style center threshold — input only registers when displacement exceeds a minimum. Project Gameface calls this "gesture size." Essential for any continuous mapping from head/hand position to a control value.
 
-#### Magenta.js (@magenta/music)
-- **Repo:** https://github.com/magenta/magenta-js
-- **License:** Apache 2.0 | **Stars:** ~2,100
-- **Use:** TensorFlow.js ML models for music: MusicVAE (interpolate between musical phrases), MelodyRNN, DrumsRNN, ImprovRNN. Client-side GPU inference. MusicVAE can interpolate between a "calm" latent vector and a "focus" latent vector, creating smooth musical transitions driven by HRV.
-- **Status:** Active (March 2026)
+**Dwell activation:** For click/select actions, hold position for N seconds. Visual progress indicator (shrinking circle or filling ring). Adjustable timing. Auto-pause when physical input device detected.
 
-#### MusicLang (ONNX)
-- **Repo:** https://huggingface.co/musiclang/musiclang-4k-onnx
-- **License:** Open
-- **Use:** MIDI generation in ONNX format, compatible with transformers.js. LLAMA2 architecture trained on CC0 MIDI dataset. Generates chord progressions and multi-track MIDI. Pair with Tone.js for synthesis — MIDI generation is much lighter than audio generation. Could run on-device.
+**Sensor fusion:** PolyMouse's insight — combine fast-coarse (gaze) with slow-precise (head) for better targeting than either alone. Generalizes: any two signal sources with complementary speed/precision tradeoffs can be fused.
 
-#### Stable Audio Open Small
-- **Repo:** https://github.com/Stability-AI/stable-audio-tools
-- **License:** MIT | **Stars:** ~3,650
-- **Model:** https://huggingface.co/stabilityai/stable-audio-open-small
-- **Use:** 341M parameter text-to-audio model optimized for Arm CPUs. Generates up to 11s of audio on a smartphone in under 8s. Most realistic path to on-device AI audio generation for mobile. Could generate ambient textures conditioned on mood parameters.
+**Intent detection:** Neural Lab AirTouch's approach — use gaze direction to determine whether a hand gesture is intentional (user looking at screen) vs. incidental (user gesturing while talking). Prevents false positives.
 
-#### ACE-Step 1.5
-- **Repo:** https://github.com/ace-step/ACE-Step-1.5
-- **License:** MIT | **Stars:** ~8,400
-- **Use:** Music foundation model. Full song generation under 4GB VRAM, under 10s on RTX 3090. LoRA fine-tuning from a few songs. Best option for pre-generating a stem library: fine-tune LoRA on calming ambient music, batch-generate hundreds of 30-60s segments.
-- **Status:** Very active (March 2026)
+### Observations
 
-#### MusicGPT
-- **Repo:** https://github.com/gabotechs/MusicGPT
-- **License:** MIT | **Stars:** ~1,400
-- **Use:** Rust binary generating music from natural language prompts using local LLMs. Nice CLI for batch-generating meditation segments server-side.
+1. Camera input has graduated from research/accessibility into platform features (Apple ships it in both OSes).
+2. The signal processing is mature — One Euro Filter, dead zones, dwell-click are solved patterns.
+3. Hand gesture systems are the most feature-rich but require hands to be visible and free.
+4. Head/face tracking works while hands are occupied (typing, holding something, eating).
+5. Sensor fusion (gaze + head) outperforms either alone but adds complexity.
+6. Intent detection (is this gesture deliberate?) remains an open UX problem — gaze-gating is the best current approach.
+7. Most projects focus on cursor positioning and clicking. Other input modalities (scrolling, zooming, panning, text selection) are underexplored relative to the signal richness available from face/hand landmarks.
 
-### Binaural Beats / Entrainment
-
-#### Gnaural Web
-- **Repo:** https://github.com/Gnaural-Web
-- **Use:** Browser-based binaural beat generator. Pure HTML5/JS. Generate beats at target brainwave frequencies (4-8Hz theta for meditation, 12-30Hz beta for focus), layer under generative music.
-
-#### 1ps0/binaural
-- **Repo:** https://github.com/1ps0/binaural
-- **License:** MIT | **Stars:** ~4
-- **Use:** Dashboard for binaural beats, solfeggio frequencies, therapeutic tones. Multiple frequency presets mapped to cognitive states. More complete than BinauralBeatJS.
-- **Status:** July 2025
-
-**Note:** Binaural beats are trivial to implement from scratch — two OscillatorNodes with a frequency offset, panned L/R. The library value is in pre-built frequency presets and transition scheduling.
-
-### Competitive Products
-
-#### Endel
-- **URL:** https://endel.io/
-- **Type:** Commercial (closed source) | **Rating:** 4.6 (31k reviews) | **Price:** $2.99-19.99/mo
-- **What:** The reference competitor. Patented "Endel Pacific" AI engine generates real-time soundscapes adapted to time of day, weather, movement, heart rate (Apple Watch). Modes: Focus, Relax, Sleep, Move. iOS/Android/Mac/Apple TV/Vision Pro/Alexa/web.
-- **Key insight:** They use rule-based generative systems, not ML. The "AI" is algorithmic composition with parameter mapping. Watch-dependent for biometrics.
-
-#### Wotja
-- **Repo:** https://github.com/Intermorphic/wotja-live-generative-music
-- **License:** MIT | **Stars:** ~3
-- **URL:** https://wotja.com/
-- **What:** Cross-platform generative music system (iOS/macOS/Windows/Android). Developer API via URI strings. Real-time root note and tempo control. "AI-free" (algorithmic).
-
-### Research: Adaptive Music + Biofeedback
-
-#### HeartDJ (Dartmouth Thesis, 2024-2025)
-- **URL:** https://digitalcommons.dartmouth.edu/masters_theses/205/
-- **What:** Directly investigates HRV biofeedback + AI music generation. Used Stable Audio Open + Suno. Key finding: quality and emotional authenticity matter more than novelty. The condition with 4 AI-generated tracks actually **decreased** HRV (heightened sympathetic activation), suggesting naive AI music hurts.
-- **Implication:** Rule-based generative systems (like Endel) outperform naive AI for wellness. Biofeedback adaptation should be subtle — gentle parameter evolution, not jarring transitions.
-
-#### GAN-Based HRV Musical Biofeedback
-- **Paper:** https://www.sciencedirect.com/science/article/abs/pii/S1746809421006923
-- **What:** GAN generating MIDI from HRV signals. Bidirectional feedback loop: HRV feeds GAN, GAN output stimulates listener.
-
-#### iHeartLift
-- **Paper:** https://pubmed.ncbi.nlm.nih.gov/22254526/
-- **What:** Closed-loop system using music tempo variability to improve HRV. Adjusts BPM based on real-time heart rate.
-
-### Recommended Architecture for MindState
-
-```
-Layer 1 — Theory:     Tonal.js (scale/chord constraints) + Scribbletune (pattern templates)
-Layer 2 — Synthesis:  Tone.js (browser) + React Native Audio API (mobile native)
-Layer 3 — Generation: Custom state machine inspired by Generative.fm. Calm/focus/energize/sleep
-                      modes define: scale, tempo range, note density, instrument palette, effects.
-                      Biofeedback (HRV, HR) maps to continuous params within mode + triggers transitions.
-Layer 4 — Entrainment: Binaural beats (trivial Tone.js oscillators) + isochronic pulses synced
-                        to target breathing rate (~0.1Hz for coherence)
-Layer 5 — Assets:     ACE-Step 1.5 or Stable Audio Open Small pre-generates ambient stem library
-Layer 6 — Optional ML: MusicLang ONNX for on-device MIDI generation, Magenta MusicVAE for
-                        mood-space interpolation
-```
-
-The HeartDJ thesis finding is critical: **well-crafted rule-based generation beats naive AI for wellness**. Ship Layer 1-4 first, add ML later when it demonstrably improves the experience.
-
-## Migration Notes
-
-### Legacy → New MediaPipe API
-Our extracted detection files use the legacy `@mediapipe/pose`, `@mediapipe/hands`, `@mediapipe/face_mesh` packages loaded from CDN. The new API is `@mediapipe/tasks-vision` with `PoseLandmarker`, `HandLandmarker`, `FaceLandmarker`. Key differences:
-- Unified API across all tasks
-- Better performance (WASM + WebGPU backends)
-- Active development (legacy packages are maintenance-only)
-- `sumitsahoo/mediapipe-pose-estimation` is the cleanest reference for the new API
-
-This migration is a natural Phase 2 for camerastein after the MVP ships.

@@ -58,18 +58,15 @@ document.addEventListener('DOMContentLoaded', () => {
     window.MotionBus.subscribe('bodyMotion', (d) => { if (!d) skeleton.updateBody(null); });
     window.MotionBus.subscribe('handPose',   (d) => { if (!d) skeleton.updateHand(null); });
 
-    // Expose video element for SharedCameraManager
-    // (it creates its own, but we can mirror it)
-    window.MotionBus.subscribe('rhythmSync', () => {
+    // Mirror SharedCameraManager's stream to the visible video element
+    function tryMirrorStream() {
         if (!video.srcObject && window.SharedCameraManager?.stream) {
             video.srcObject = window.SharedCameraManager.stream;
         }
-    });
-    window.MotionBus.subscribe('bodyMotion', () => {
-        if (!video.srcObject && window.SharedCameraManager?.stream) {
-            video.srcObject = window.SharedCameraManager.stream;
-        }
-    });
+    }
+    window.MotionBus.subscribe('rhythmSync', tryMirrorStream);
+    window.MotionBus.subscribe('bodyMotion', tryMirrorStream);
+    window.MotionBus.subscribe('handPose', tryMirrorStream);
 
     // Render loop
     function frame() {

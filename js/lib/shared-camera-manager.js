@@ -37,11 +37,12 @@ class SharedCameraManager {
         this.activeMode = null;  // 'head' | 'body' | null (primary mode, exclusive)
         this._previousMode = null;  // Track previous mode for transition events
 
-        // Hand overlay state — runs concurrently with primary mode
+        // Hand tracking state — overlay (throttled) or primary (full rate)
         this._handOverlayActive = false;
         this._handOverlayCallback = null;
         this._handFrameCounter = 0;
-        // Process hands every Nth frame. ~3Hz at 20fps base.
+        this._handPrimaryMode = false; // true when hands are the only active detector
+        // Process hands every Nth frame in overlay mode. ~3Hz at 20fps base.
         // Mobile gets slower rate to preserve battery.
         this._handFrameSkip = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? 12 : 6;
 
@@ -213,25 +214,32 @@ class SharedCameraManager {
      * @param {'head' | 'body'} mode
      */
     async togglePermission(mode) {
-        // Hand overlay is independent of head/body primary mode toggle
+        // Hand tracking — can run as primary (full rate) or overlay (throttled)
         if (mode === 'hand') {
             this.permissions.hand = !this.permissions.hand;
 
             if (this.permissions.hand) {
-                // If no primary mode active, start head as default so camera is running
-                if (!this.activeMode) {
-                    this.permissions.head = true;
-                    await this._startDetectorForMode('head');
-                }
-                // Start hand overlay
+                // Start hand detector
                 try {
                     await this._dep('handDetector').start();
                 } catch (err) {
-                    this._dep('debugManager')?.warn?.('Hand overlay start failed:', err?.message || String(err));
+                    this._dep('debugManager')?.warn?.('Hand tracking start failed:', err?.message || String(err));
                     this.permissions.hand = false;
+                }
+
+                // If no primary mode active, hands run at full frame rate (primary slot)
+                if (!this.activeMode) {
+                    this._handPrimaryMode = true;
+                    this._dep('debugManager')?.info?.('🖐️ Hand tracking as primary (full frame rate)');
                 }
             } else {
                 this._dep('handDetector')?.stop();
+                this._handPrimaryMode = false;
+
+                // If no primary mode and no hand, stop the camera
+                if (!this.activeMode) {
+                    this.stopMode();
+                }
             }
 
             // Sync activeEffects for UI
@@ -240,10 +248,11 @@ class SharedCameraManager {
             }
 
             const status = this.permissions.hand ? 'ON' : 'OFF';
-            const primaryLabel = this.activeMode || 'off';
+            const rate = this._handPrimaryMode ? 'primary' : 'overlay';
+            const primaryLabel = this.activeMode || (this._handPrimaryMode ? 'hand' : 'off');
             if (this._dep('commandRegistry')?.showParameterIndicator) {
                 this._dep('commandRegistry').showParameterIndicator(
-                    `🖐️ Hand Overlay: ${status} (primary: ${primaryLabel})`
+                    `🖐️ Hand Tracking: ${status} (${rate}, ${primaryLabel})`
                 );
             }
             return;
@@ -315,12 +324,22 @@ class SharedCameraManager {
             this._dep('debugManager')?.info?.('🛑 All modes disabled -> Stopping Camera');
             const prevMode = this.activeMode;
             this.setAutoSwitch(false);
-            // Stop whichever detector is active, then stop camera
+            // Stop whichever detector is active
             if (this.activeMode === 'head' && this._dep('headDetector')?.active) {
                 this._dep('headDetector').stop();
             } else if (this.activeMode === 'body' && this._dep('bodyDetector')?.active) {
                 this._dep('bodyDetector').stop();
             } else {
+                this.stopMode();
+            }
+
+            // If hand tracking is still active, promote to primary (full frame rate)
+            if (this.permissions.hand && this._handOverlayActive) {
+                this._handPrimaryMode = true;
+                this.targetFPS = this._baseFPS;
+                this._dep('debugManager')?.info?.('🖐️ Hand tracking promoted to primary (full frame rate)');
+            } else if (!this.permissions.hand) {
+                // No hand tracking either — stop camera entirely
                 this.stopMode();
             }
 
@@ -348,6 +367,14 @@ class SharedCameraManager {
      */
     async _startDetectorForMode(mode) {
         try {
+            // Demote hands from primary to overlay when a head/body mode starts
+            if (this._handPrimaryMode) {
+                this._handPrimaryMode = false;
+                this._dep('debugManager')?.info?.('🖐️ Hand tracking demoted to overlay (primary mode starting)');
+                // Reduce FPS slightly for overlay sharing
+                this.targetFPS = Math.max(10, Math.round(this._baseFPS * 0.85));
+            }
+
             if (mode === 'head') {
                 // HeadBobDetector.start() calls SharedCameraManager.startMode('head', this._onResults)
                 await this._dep('headDetector').start();
@@ -864,9 +891,15 @@ class SharedCameraManager {
     async _startHandOverlay(resultsCallback) {
         if (this._handOverlayActive) return;
 
-        // Ensure camera system is initialized and streaming
+        // Ensure camera is streaming. If no primary mode has initialized,
+        // just start the stream without loading face/pose models — hand-only
+        // mode doesn't need them.
         if (!this.active) {
-            await this.initialize();
+            if (!this.isAvailable()) {
+                throw new Error('Camera not available on this device');
+            }
+            // Mark active without full initialize (skip face/pose model loading)
+            this.active = true;
         }
         await this._startStream();
 
@@ -887,15 +920,18 @@ class SharedCameraManager {
         this._handOverlayActive = true;
         this._handFrameCounter = 0;
 
-        // If no primary mode is running, start the frame loop
         if (!this.activeMode) {
-            // Frame loop isn't running — we need to start it.
-            // Set a temporary activeMode so loop doesn't exit immediately.
-            // This is a valid state: overlay-only (rare but supported).
-        }
-
-        // Reduce primary FPS slightly when overlay is active to share frame budget
-        if (this.activeMode) {
+            // No primary mode — hands run as primary at full frame rate.
+            // Start the frame loop (normally started by startMode for head/body).
+            this._handPrimaryMode = true;
+            this.targetFPS = this._baseFPS;
+            if (!this.animationFrameId) {
+                this._startFrameLoop();
+            }
+            this._dep('debugManager')?.info?.('🖐️ Hand tracking started as primary (full frame rate)');
+        } else {
+            // Primary mode active — hands run as throttled overlay
+            this._handPrimaryMode = false;
             this.targetFPS = Math.max(10, Math.round(this._baseFPS * 0.85));
         }
 
@@ -1271,24 +1307,24 @@ class SharedCameraManager {
                         }
                     }
 
-                    // Hand Overlay — runs on every Nth frame alongside primary mode.
+                    // Hand tracking — full rate when primary, throttled when overlay.
                     // Separate try/catch so hand errors never affect primary tracking.
                     if (this._handOverlayActive && this.hands) {
-                        this._handFrameCounter++;
-                        if (this._handFrameCounter >= this._handFrameSkip) {
-                            this._handFrameCounter = 0;
+                        // Primary mode: process every frame. Overlay mode: every Nth frame.
+                        const shouldProcess = this._handPrimaryMode
+                            || (++this._handFrameCounter >= this._handFrameSkip && (this._handFrameCounter = 0, true));
+                        if (shouldProcess) {
                             try {
                                 await this.hands.send({ image: frameSource });
                             } catch (handErr) {
-                                // Silently disable hand overlay on error — primary mode continues
                                 const msg = handErr?.message || String(handErr);
                                 if (this._isFatalFrameError(handErr)) {
-                                    this._dep('debugManager')?.warn?.('🖐️ Hand overlay fatal error, disabling:', msg);
+                                    this._dep('debugManager')?.warn?.('🖐️ Hand tracking fatal error, disabling:', msg);
                                     this._stopHandOverlay();
                                     this.permissions.hand = false;
+                                    this._handPrimaryMode = false;
                                     this._dep('handDetector')?.stop();
                                 }
-                                // Non-fatal: skip this frame silently
                             }
                         }
                     }

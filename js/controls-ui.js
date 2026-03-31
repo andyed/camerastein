@@ -26,6 +26,7 @@ export class ControlsUI {
 
         this._wireToggleButtons();
         this._wireKeyboardBindings();
+        this._wireVideoOverlay();
         this._populateCameraSelect();
         this._startFpsCounter();
         this._startStatePoller();
@@ -51,6 +52,17 @@ export class ControlsUI {
         });
     }
 
+    // --- Video Overlay Toggle ---
+
+    _wireVideoOverlay() {
+        const cb = document.getElementById('cb-video-overlay');
+        const video = document.getElementById('video-feed');
+        if (!cb || !video) return;
+        cb.addEventListener('change', () => {
+            video.style.display = cb.checked ? '' : 'none';
+        });
+    }
+
     async _handleToggle(mode) {
         const mgr = window.SharedCameraManager;
         if (!mgr) return;
@@ -73,17 +85,12 @@ export class ControlsUI {
         if (!mgr) return;
 
         const perms = mgr.permissions || {};
-        const activeMode = mgr.activeMode;
 
-        // Head: active if permissions.head is on AND it's the active primary mode
-        // (or no primary mode is active but head permission is on)
-        const headActive = perms.head && activeMode !== 'body';
-        const bodyActive = perms.body && activeMode === 'body';
-        const handActive = !!perms.hand;
-
-        this.btnHead.classList.toggle('active', headActive);
-        this.btnBody.classList.toggle('active', bodyActive);
-        this.btnHand.classList.toggle('active', handActive);
+        // Reflect actual permission state — SharedCameraManager may
+        // auto-enable head when hand is toggled on (needs a primary mode)
+        this.btnHead.classList.toggle('active', !!perms.head);
+        this.btnBody.classList.toggle('active', !!perms.body);
+        this.btnHand.classList.toggle('active', !!perms.hand);
     }
 
     // --- Camera Device Picker ---

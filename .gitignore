@@ -1,0 +1,8 @@
+node_modules/
+.DS_Store
+
+# Private specs and experiments — not for public repo
+docs/ITSEESYOU_SPEC.md
+docs/OPTIMAC_SPEC.md
+headscroll-test.html
+demos/
