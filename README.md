@@ -1,5 +1,7 @@
 # Camerastein
 
+**[Live Demo](https://andyed.github.io/camerastein/)** | **[Tasks Vision Demo](https://andyed.github.io/camerastein/?tasks-vision)**
+
 Camera body signal detection platform — head, body, and hands via MediaPipe.
 
 Camerastein is a testbed for the MediaPipe motion detection system used in [Psychodeli+](https://psychodeli.com) (closed source). It extracts the detection, signal processing, and event bus architecture into a standalone web app for:
