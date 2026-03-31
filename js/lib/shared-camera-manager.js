@@ -395,8 +395,16 @@ class SharedCameraManager {
             return false;
         }
 
-        // Check WebGL (required by MediaPipe) — uses cached check from base loader
-        if (!MediaPipeBaseLoader.isWebGLAvailable()) {
+        // Check WebGL (required by MediaPipe)
+        if (!SharedCameraManager._webglAvailable) {
+            try {
+                const c = document.createElement('canvas');
+                SharedCameraManager._webglAvailable = !!(c.getContext('webgl2') || c.getContext('webgl'));
+            } catch (_) {
+                SharedCameraManager._webglAvailable = false;
+            }
+        }
+        if (!SharedCameraManager._webglAvailable) {
             this._dep('debugManager')?.warn?.('SharedCameraManager: WebGL not available');
             return false;
         }

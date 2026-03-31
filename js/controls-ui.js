@@ -25,6 +25,7 @@ export class ControlsUI {
         this._lastFpsUpdate = 0;
 
         this._wireToggleButtons();
+        this._wireKeyboardBindings();
         this._populateCameraSelect();
         this._startFpsCounter();
         this._startStatePoller();
@@ -36,6 +37,18 @@ export class ControlsUI {
         this.btnHead.addEventListener('click', () => this._handleToggle('head'));
         this.btnBody.addEventListener('click', () => this._handleToggle('body'));
         this.btnHand.addEventListener('click', () => this._handleToggle('hand'));
+    }
+
+    // --- Keyboard Bindings (shared with Psychodeli+) ---
+
+    _wireKeyboardBindings() {
+        if (!window.CameraCommands) return;
+        window.CameraCommands.installKeyboardBindings({
+            onToggle: ({ perms, message }) => {
+                this._syncButtonState();
+                this.modeIndicator.textContent = message;
+            }
+        });
     }
 
     async _handleToggle(mode) {

@@ -1154,38 +1154,5 @@ class HeadBobDetector {
 // Global singleton
 window.HeadBobDetector = new HeadBobDetector();
 
-// Register keyboard shortcuts using AppRuntime lifecycle
-// NOTE: * key registration moved to commands-extra.js (SharedCameraManager permission system)
-function registerHeadBobCommand() {
-    if (!window.CommandHelpers?.registerCommand) return;
-
-    // Camera intensity / head sensitivity boost
-    CommandHelpers.registerCommand('(',
-        CommandHelpers.createToggleCommand({
-            name: 'Camera Intensity',
-            description: 'Increase head tracking sensitivity (more responsive yaw/roll/pitch + motion mapping)',
-            onActivate: function () {
-                window.HeadBobDetector?.setSensitivityMode?.('boost');
-                return true;
-            },
-            onDeactivate: function () {
-                window.HeadBobDetector?.setSensitivityMode?.('normal');
-                return true;
-            }
-        })
-    );
-    this._dep('debugManager')?.info?.('📷 Camera Intensity registered on ( key');
-}
-
-// Use AppRuntime lifecycle if available, otherwise fallback
-if (this._dep('commandRegistry')?.stateMachine) {
-    registerHeadBobCommand();
-} else if (window.AppRuntime?.lifecycle?.on) {
-    window.AppRuntime.lifecycle.on('commandRegistry:ready', registerHeadBobCommand);
-} else {
-    setTimeout(() => {
-        if (window.CommandHelpers?.registerCommand) {
-            registerHeadBobCommand();
-        }
-    }, 3000);
-}
+// Camera commands (6/7/8/9 keys) handled by camera-commands.js
+// Camera intensity (( key) removed — sensitivity is always normal.
