@@ -632,11 +632,19 @@ class SharedCameraManager {
                     // until reload — the "stuck in waiting for" bug. A rejection here
                     // flows into the attempt loop's existing catch (stream stopped, next
                     // constraint attempt tried, errors surfaced).
+                    // COLD-START GRACE (same day, second field report): the session's
+                    // FIRST camera open on macOS can exceed 8s (sensor wake + Continuity
+                    // Camera enumeration) — the first toggle always failed while the
+                    // second found warm hardware. The cold session's FIRST attempt gets
+                    // 20s; fallback attempts and warmed sessions get the snappy 8s, so a
+                    // true zombie still fails in bounded time (~44s worst case, once).
+                    const metaMs = (!this._metaWarmedUp && i === 0) ? 20000 : 8000;
                     const metaTimeout = setTimeout(() => {
-                        reject(new Error('Camera stream metadata never arrived (8s) — device busy or zombie stream'));
-                    }, 8000);
+                        reject(new Error(`Camera stream metadata never arrived (${metaMs / 1000}s) — device busy or zombie stream`));
+                    }, metaMs);
                     this.videoElement.onloadedmetadata = () => {
                         clearTimeout(metaTimeout);
+                        this._metaWarmedUp = true;
                         const playPromise = this.videoElement.play();
                         if (playPromise && typeof playPromise.then === 'function') {
                             playPromise.then(resolve).catch(reject);
@@ -714,6 +722,10 @@ class SharedCameraManager {
                     errorDetails.includes('denied')
                 );
                 const isNoFrames = /produced no valid frames/i.test(err?.message || '');
+                // 2026-06-11: the metadata timeout must be a FALLBACK-class error —
+                // unclassified errors abort the whole pass below, so attempt 1's
+                // timeout never even tried the remaining constraints.
+                const isMetaTimeout = /metadata never arrived/i.test(err?.message || '');
 
                 this._stopStream();
                 lastNotFound = isNotFound;
@@ -740,7 +752,7 @@ class SharedCameraManager {
                     this.preferredDeviceId = null;
                 }
 
-                if (!(isNotFound || isNoFrames) || i === streamAttempts.length - 1) {
+                if (!(isNotFound || isNoFrames || isMetaTimeout) || i === streamAttempts.length - 1) {
                     this._dep('debugManager')?.logTransition('camera', 'stream-failed', {
                         attempt: i + 1,
                         totalAttempts: streamAttempts.length,
