@@ -455,8 +455,20 @@ class SharedCameraManager {
 
         try {
             await this.loadPromise;
+        } catch (err) {
+            // 2026-06-11: a failed init left the persistent "Loading Face Tracking..."
+            // indicator up forever and the failure invisible (console.warn is suppressed
+            // here) — the user-facing half of the stuck-startup bug. Replace it with a
+            // visible, non-persistent failure message; the retry path is a fresh
+            // toggle (loading/loadPromise are cleared below, so it actually retries).
+            try {
+                this._dep('commandRegistry')?.showParameterIndicator?.(
+                    `📷 Camera failed: ${err?.message || 'unknown error'} — toggle tracking to retry`, false);
+            } catch (_) { }
+            throw err;
         } finally {
             this.loading = false;
+            this.loadPromise = null;
         }
     }
 
@@ -613,7 +625,18 @@ class SharedCameraManager {
                 }
 
                 await new Promise((resolve, reject) => {
+                    // 2026-06-11: TIMEOUT added — this wait had no failure path, and a
+                    // stream that opens but never delivers metadata (camera half-held by
+                    // another app/tab, post-sleep camera zombie) parked it FOREVER. With
+                    // initialize() caching loadPromise, one hang poisoned every retry
+                    // until reload — the "stuck in waiting for" bug. A rejection here
+                    // flows into the attempt loop's existing catch (stream stopped, next
+                    // constraint attempt tried, errors surfaced).
+                    const metaTimeout = setTimeout(() => {
+                        reject(new Error('Camera stream metadata never arrived (8s) — device busy or zombie stream'));
+                    }, 8000);
                     this.videoElement.onloadedmetadata = () => {
+                        clearTimeout(metaTimeout);
                         const playPromise = this.videoElement.play();
                         if (playPromise && typeof playPromise.then === 'function') {
                             playPromise.then(resolve).catch(reject);
