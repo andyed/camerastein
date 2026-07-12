@@ -139,61 +139,42 @@ class BodyMotionDetector {
     }
 
     /**
-     * Start body motion detection
-     * Uses SharedCameraManager for instant switching with head tracking.
+     * Request body tracking via the camera machine. DEPRECATED as a lifecycle
+     * authority — detectors are pure consumers now; SharedCameraManager calls
+     * _activate/_deactivate when ownership actually changes. Head/body
+     * exclusivity is the machine's arbitration, not this detector's job.
      */
     async start() {
-        if (this.active) return;
-
-        // Stop head bob detector if active (updates its state/indicator)
-        if (this._dep('headDetector')?.active) {
-            this._dep('debugManager')?.info?.('🔄 Stopping head tracking for body mode');
-            this._dep('headDetector').stop();
-        }
-
-        this._dep('debugManager')?.info?.('🕺 Starting Body Motion Detector...');
-
-        try {
-            if (!this._dep('cameraManager')) {
-                throw new Error('SharedCameraManager not available');
-            }
-
-            // Use shared camera - this loads both models on first call
-            await this._dep('cameraManager').startMode('body', this._onResults);
-
-            this.active = true;
-            this.enabled = true;
-
-            this._dep('debugManager')?.info?.('✅ Body Motion Detector active');
-            this._showIndicator(true);
-
-        } catch (error) {
-            this._dep('debugManager')?.warn?.('Failed to start Body Motion Detector:', error?.message || String(error));
-            this.stop();
-            throw error;
-        }
+        const r = await this._dep('cameraManager')?.setModeDesired?.('body', true);
+        if (!r?.ok) throw new Error('Body tracking failed to start');
     }
 
     /**
-     * Stop body motion detection
-     * Models stay loaded for instant switching to head mode.
-     * @param {boolean} fullShutdown - If true, also stops SharedCameraManager
+     * Release body tracking via the camera machine.
+     * @param {boolean} fullShutdown - also unload models + stop the manager
      */
     stop(fullShutdown = false) {
+        this._dep('cameraManager')?.setModeDesired?.('body', false);
+        if (fullShutdown) this._dep('cameraManager')?.shutdown?.();
+    }
+
+    /** Machine hook: body became the live primary. Pure consumer setup only. */
+    _activate() {
+        if (this.active) return;
+        this.active = true;
+        this.enabled = true;
+        this._dep('debugManager')?.info?.('✅ Body Motion Detector active');
+        this._showIndicator(true);
+    }
+
+    /**
+     * Machine hook: body detached. Clears rolling state and nulls the body
+     * channel — payload contract: null means null, no zombie payloads.
+     */
+    _deactivate() {
         if (!this.active) return;
-
-        this._dep('debugManager')?.info?.('🛑 Stopping Body Motion Detector');
-
         this.active = false;
         this.enabled = false;
-
-        if (this._dep('cameraManager')?.activeMode === 'body') {
-            if (fullShutdown) {
-                this._dep('cameraManager').shutdown();
-            } else {
-                this._dep('cameraManager').stopMode();
-            }
-        }
 
         this.bodyStates = [];
         this._swayHistory = null;
@@ -821,19 +802,32 @@ class BodyMotionDetector {
             || 120;
         const beatFreq = musicBPM / 60;
 
-        // Check both sway and bounce against beat
-        const subdivisions = [0.5, 1.0, 2.0];
+        // Check both sway and bounce against the beat and its half/double
+        // subdivisions. Shared matcher (single source of truth — js/lib/beat-
+        // subdivision.js); relativeTo:'matched' reproduces this detector's original
+        // convention exactly (deviation measured against k×beatFreq).
         let bestSync = 0;
 
-        for (const freq of [this.state.swayFrequency, this.state.bounceFrequency]) {
-            if (freq <= 0) continue;
-            for (const sub of subdivisions) {
-                const targetFreq = beatFreq * sub;
-                const ratio = freq / targetFreq;
-                const deviation = Math.abs(ratio - 1.0);
-                if (deviation < 0.2) {
-                    const sync = 1.0 - (deviation / 0.2);
-                    bestSync = Math.max(bestSync, sync);
+        if (window.BeatSubdivision) {
+            for (const freq of [this.state.swayFrequency, this.state.bounceFrequency]) {
+                if (freq <= 0) continue;
+                const sync = window.BeatSubdivision.syncScore(freq, beatFreq, 0.2, { relativeTo: 'matched' });
+                bestSync = Math.max(bestSync, sync);
+            }
+        } else {
+            // Fallback: original inline [0.5, 1, 2] loop (20% tolerance), kept so the
+            // detector still works standalone when BeatSubdivision isn't loaded (Camerastein).
+            const subdivisions = [0.5, 1.0, 2.0];
+            for (const freq of [this.state.swayFrequency, this.state.bounceFrequency]) {
+                if (freq <= 0) continue;
+                for (const sub of subdivisions) {
+                    const targetFreq = beatFreq * sub;
+                    const ratio = freq / targetFreq;
+                    const deviation = Math.abs(ratio - 1.0);
+                    if (deviation < 0.2) {
+                        const sync = 1.0 - (deviation / 0.2);
+                        bestSync = Math.max(bestSync, sync);
+                    }
                 }
             }
         }

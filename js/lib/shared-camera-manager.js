@@ -13,6 +13,20 @@
  * @see docs/HEAD_BOB_DETECTION.md
  */
 
+// Camera feature flags — which video-tracking modes are available. iOS v1 (the Capacitor
+// native app) ships HEAD-ONLY: hand + body are deferred to keep camera init light and the UX
+// focused. Desktop + web keep all three. Read by togglePermission / setModeDesired so EVERY
+// activation path (keyboard, consumer surface, permalink autostart, Electron) honors it from
+// one choke point — and the gated detectors never start, so their MediaPipe models never load.
+// Override by setting window.CameraFeatureFlags before camera init.
+if (typeof window !== 'undefined' && !window.CameraFeatureFlags) {
+    const _cap = window.Capacitor;
+    const _isNativeApp = !!(_cap && (typeof _cap.isNativePlatform === 'function'
+        ? _cap.isNativePlatform()
+        : (_cap.platform && _cap.platform !== 'web')));
+    window.CameraFeatureFlags = { head: true, hand: !_isNativeApp, body: !_isNativeApp };
+}
+
 class SharedCameraManager {
     constructor() {
         this.videoElement = null;
@@ -33,15 +47,20 @@ class SharedCameraManager {
         this.poseLoaded = false;
         this.handsLoaded = false;
 
-        // Current active processor
-        this.activeMode = null;  // 'head' | 'body' | null (primary mode, exclusive)
-        this._previousMode = null;  // Track previous mode for transition events
+        // Ownership truth lives in the CameraMachine (js/lib/camera-machine.js):
+        // activeMode / _handPrimaryMode / _handOverlayActive / permissions are
+        // GETTERS over machine state — transitions, not scattered flags
+        // (docs/TODO.md "Camera Controls — FULL REFACTOR"). A missing
+        // CameraMachine throws here: louder and safer than a half-alive camera
+        // (UI rows hide themselves when this singleton is absent).
+        this._machine = window.CameraMachine.create();
+        // Serialized effect queue — one acquire/apply/stop at a time, mash-proof.
+        this._chain = Promise.resolve();
 
-        // Hand tracking state — overlay (throttled) or primary (full rate)
-        this._handOverlayActive = false;
+        // Hand frame-pacing state (overlay = throttled, dedicated = full rate)
         this._handOverlayCallback = null;
         this._handFrameCounter = 0;
-        this._handPrimaryMode = false; // true when hands are the only active detector
+        this._handSuspended = false; // set on hand frame errors until the machine detaches hands
         // Process hands every Nth frame in overlay mode. ~3Hz at 20fps base.
         // Mobile gets slower rate to preserve battery.
         this._handFrameSkip = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? 12 : 6;
@@ -84,22 +103,47 @@ class SharedCameraManager {
             bodyProbeIntervalMs: 3000    // How often to peek at pose while in face mode
         };
 
-        // Periodic body probe state — detects arm-waving while in face mode
+        // Periodic body probe state — detects arm-waving while in face mode.
+        // The probe is POLICY (signal analysis), not ownership: it never flips
+        // machine state itself; a confirmed probe dispatches AUTO_SWITCH.
         this._lastBodyProbeTime = 0;
+        this.isProbingBody = false;
+        this.probeStartTime = 0;
+        this._probeIsAutoSwitch = false;
 
-        // Multi-Toggle Permission State
-        // Both true = Auto-Switch
-        // Only one true = Forced Mode
-        // Both false = Disabled (idle at startup)
-        this.permissions = {
-            head: false,
-            body: false,
-            hand: false
-        };
+        // NOTE: `permissions` (the desired {head,body,hand} config) is a getter
+        // over machine state — see below. There is no flag object to drift.
 
         // Dependencies injected via init() after all scripts load
         this._deps = {};
     }
+
+    // ------------------------------------------------------------------
+    // Machine-backed views — the single source of truth for ownership.
+    // Legacy readers (EQ panel, history overlay, motion ladder, Electron
+    // bridge, Camerastein) keep working against these exact names.
+    // ------------------------------------------------------------------
+
+    /** Desired config — the user's toggles. Read-only by convention. */
+    get permissions() { return this._machine.state.desired; }
+
+    /** Live primary mode: 'head' | 'body' | null (hand-dedicated reads null). */
+    get activeMode() {
+        const p = this._machine.state.live.primary;
+        return (p === 'head' || p === 'body') ? p : null;
+    }
+
+    /** True when hands own the camera at full rate (dedicated mode). */
+    get _handPrimaryMode() { return this._machine.state.live.primary === 'hand'; }
+
+    /** True when hand processing runs at all (overlay or dedicated). */
+    get _handOverlayActive() {
+        const l = this._machine.state.live;
+        return l.overlay || l.primary === 'hand';
+    }
+
+    /** Machine phase: idle | acquiring | running | switching | stopping. */
+    get phase() { return this._machine.state.phase; }
 
     /**
      * Inject dependencies. Called from motion-init.js after all singletons exist.
@@ -111,6 +155,156 @@ class SharedCameraManager {
 
     /** Safe dependency access with window fallback */
     _dep(name) { return this._deps[name] || window[name]; }
+
+    // ------------------------------------------------------------------
+    // Machine driver: synchronous dispatch, serialized effect execution.
+    //
+    // User commands (TOGGLE/SET_DESIRED) dispatch IMMEDIATELY so mashed keys
+    // mutate the desired config with zero latency; the machine absorbs them
+    // while an acquire/apply/stop is in flight and reconciles on completion.
+    // Policy signals (AUTO_SWITCH/FATAL/HAND_FATAL) dispatch QUEUED so they
+    // serialize behind whatever is in flight. Every queued effect carries
+    // opSeq; superseded effects are skipped, and effect impls re-check opSeq
+    // before mutating the world — no stale async straggler can act.
+    // ------------------------------------------------------------------
+
+    /** Dispatch + ring-log a machine event; returns its effects. */
+    _dispatchLogged(ev) {
+        const before = this._machine.state.phase;
+        const effects = this._machine.dispatch(ev);
+        const s = this._machine.state;
+        const want = (s.desired.head ? 'H' : '') + (s.desired.body ? 'B' : '') + (s.desired.hand ? 'h' : '');
+        this._lifecycle('machine', `${ev.type}${ev.mode ? ':' + ev.mode : ''}${ev.to ? ':' + ev.to : ''}${ev.errClass ? ':' + ev.errClass : ''} ${before}→${s.phase} live=${s.live.primary || 'none'}${s.live.overlay ? '+hand' : ''} want=${want || '-'}`);
+        return effects;
+    }
+
+    /** Append effects to the serialized chain (FIFO, one at a time). */
+    _enqueueEffects(effects) {
+        (effects || []).forEach((eff) => {
+            this._chain = this._chain
+                .then(() => this._execEffect(eff))
+                .catch((err) => {
+                    this._dep('debugManager')?.warn?.('Camera effect error:', err?.message || String(err));
+                });
+        });
+    }
+
+    /** Resolve when the chain (including follow-ups it spawned) drains. */
+    async _settle() {
+        let tail;
+        do { tail = this._chain; await tail; } while (tail !== this._chain);
+    }
+
+    /** User command: immediate dispatch, then wait for the world to settle. */
+    _command(ev) {
+        this._enqueueEffects(this._dispatchLogged(ev));
+        return this._settle().then(() => this._syncUiState());
+    }
+
+    /** Policy signal: dispatch serialized behind any in-flight effect. */
+    _commandQueued(ev) {
+        this._chain = this._chain
+            .then(() => { this._enqueueEffects(this._dispatchLogged(ev)); })
+            .catch(() => { });
+        return this._settle().then(() => this._syncUiState());
+    }
+
+    /** Completion event from inside an effect impl (same-link dispatch). */
+    _completion(ev) {
+        this._enqueueEffects(this._dispatchLogged(ev));
+    }
+
+    async _execEffect(eff) {
+        if ((eff.do === 'acquire' || eff.do === 'apply' || eff.do === 'stop')
+            && eff.opSeq !== this._machine.state.opSeq) {
+            this._lifecycle('skip-superseded', `${eff.do} op${eff.opSeq}`);
+            return;
+        }
+        switch (eff.do) {
+            case 'acquire': return this._effectAcquire(eff);
+            case 'apply': return this._effectApply(eff);
+            case 'stop': return this._effectStop(eff);
+            case 'emitModeChange': return this._emitModeChangeEvent(eff.from, eff.to, eff.reason);
+            case 'notifyError': return this._notifyError(eff);
+            default: return undefined;
+        }
+    }
+
+    /**
+     * Toggle desired state for a mode — THE public entry point (keys, EQ/strip
+     * buttons, Electron menu all land here via CameraCommands).
+     * @param {'head' | 'body' | 'hand'} mode
+     */
+    async togglePermission(mode) {
+        if (mode !== 'head' && mode !== 'body' && mode !== 'hand') return;
+        if (window.CameraFeatureFlags && window.CameraFeatureFlags[mode] === false) {
+            window.debugManager?.info?.('[Camera] ' + mode + ' tracking disabled by feature flag — ignoring toggle');
+            return;
+        }
+        await this._command({ type: 'TOGGLE', mode });
+        if (mode === 'hand') this._showHandStatus();
+    }
+
+    /**
+     * Programmatic set-to-state (permalink autostart, Electron, detector shims).
+     * Resolves { ok } — ok=false means the request failed and was rolled back,
+     * which callers like the permalink auto-retry rely on.
+     * @param {'head' | 'body' | 'hand'} mode
+     * @param {boolean} on
+     */
+    async setModeDesired(mode, on) {
+        if (mode !== 'head' && mode !== 'body' && mode !== 'hand') return { ok: false };
+        if (window.CameraFeatureFlags && window.CameraFeatureFlags[mode] === false) {
+            // Feature-flagged off (e.g. hand/body on iOS v1). Treat as a settled no-op so
+            // permalink/Electron auto-retry doesn't loop trying to enable a disabled mode.
+            return { ok: true, noop: true, disabled: true };
+        }
+        if (!!this._machine.state.desired[mode] === !!on) return { ok: true, noop: true };
+        await this._command({ type: 'TOGGLE', mode });
+        return { ok: !!this._machine.state.desired[mode] === !!on };
+    }
+
+    /** Post-settle UI/registry/electron sync — desired flags are the truth. */
+    _syncUiState() {
+        const d = this._machine.state.desired;
+        const reg = this._dep('commandRegistry');
+        if (reg?.activeEffects) {
+            reg.activeEffects['Head Tracking'] = !!d.head;
+            reg.activeEffects['Body Tracking'] = !!d.body;
+            reg.activeEffects['Hand Tracking'] = !!d.hand;
+        }
+        const both = !!(d.head && d.body);
+        if (both && !this.autoSwitchEnabled) {
+            this.hasUsedHead = true;
+            this.hasUsedBody = true;
+            this.autoSwitchEnabled = true;
+            this._dep('debugManager')?.logTransition('camera', 'auto-switch-eligible');
+        }
+        if (this.autoSwitchConfig.enabled !== both) this.setAutoSwitch(both);
+        if (typeof this._dep('electronBridge')?.reportEffectState === 'function') {
+            try { this._dep('electronBridge').reportEffectState(); } catch (_) { }
+        }
+    }
+
+    /** Hand toggle status toast (parity with the pre-machine UX). */
+    _showHandStatus() {
+        const status = this.permissions.hand ? 'ON' : 'OFF';
+        const rate = this._handPrimaryMode ? 'dedicated' : 'overlay';
+        const primaryLabel = this.activeMode || (this._handPrimaryMode ? 'hand' : 'off');
+        this._dep('commandRegistry')?.showParameterIndicator?.(
+            `🖐️ Hand Tracking: ${status} (${rate}, ${primaryLabel})`
+        );
+    }
+
+    /** User-visible failure surfaced by the machine (rollback already done). */
+    _notifyError(eff) {
+        const labels = (eff.modes || []).map(m => m === 'head' ? 'Head' : m === 'body' ? 'Body' : 'Hand');
+        const what = labels.length ? labels.join('+') : 'Camera';
+        this._dep('debugManager')?.warn?.(`Camera ${eff.stage} failed (${eff.errClass}): ${eff.message}`);
+        this._dep('commandRegistry')?.showParameterIndicator?.(
+            `❌ ${what} tracking failed${eff.errClass === 'denied' ? ' (permission denied)' : ''} — toggle to retry`
+        );
+    }
 
     async listVideoInputs() {
         if (!navigator.mediaDevices?.enumerateDevices) {
@@ -207,210 +401,264 @@ class SharedCameraManager {
         this._dep('debugManager')?.logTransition?.('camera', 'mode-change', { from: from || 'off', to: to || 'off', reason });
     }
 
-    /**
-     * Toggle permission for a specific mode.
-     * Delegates to detector start()/stop() methods so internal detector state
-     * (face size calibration, body state history, indicators) is properly managed.
-     * @param {'head' | 'body'} mode
-     */
-    async togglePermission(mode) {
-        // Hand tracking — can run as primary (full rate) or overlay (throttled)
-        if (mode === 'hand') {
-            this.permissions.hand = !this.permissions.hand;
+    // ------------------------------------------------------------------
+    // Effect implementations — the imperative arms of the machine.
+    // acquire = cold start (stream + models + attach); apply = live
+    // reconfigure with NO stream bounce; stop = teardown (models cached).
+    // Each re-checks opSeq before touching the world so a superseded op
+    // can never act on stale intent.
+    // ------------------------------------------------------------------
 
-            if (this.permissions.hand) {
-                // Start hand detector
-                try {
-                    await this._dep('handDetector').start();
-                } catch (err) {
-                    this._dep('debugManager')?.warn?.('Hand tracking start failed:', err?.message || String(err));
-                    this.permissions.hand = false;
-                }
-
-                // If no primary mode active, hands run at full frame rate (primary slot)
-                if (!this.activeMode) {
-                    this._handPrimaryMode = true;
-                    this._dep('debugManager')?.info?.('🖐️ Hand tracking as primary (full frame rate)');
-                }
-            } else {
-                this._dep('handDetector')?.stop();
-                this._handPrimaryMode = false;
-
-                // If no primary mode and no hand, stop the camera
-                if (!this.activeMode) {
-                    this.stopMode();
-                }
-            }
-
-            // Sync activeEffects for UI
-            if (this._dep('commandRegistry')?.activeEffects) {
-                this._dep('commandRegistry').activeEffects['Hand Tracking'] = this.permissions.hand;
-            }
-
-            const status = this.permissions.hand ? 'ON' : 'OFF';
-            const rate = this._handPrimaryMode ? 'primary' : 'overlay';
-            const primaryLabel = this.activeMode || (this._handPrimaryMode ? 'hand' : 'off');
-            if (this._dep('commandRegistry')?.showParameterIndicator) {
-                this._dep('commandRegistry').showParameterIndicator(
-                    `🖐️ Hand Tracking: ${status} (${rate}, ${primaryLabel})`
-                );
-            }
-            return;
-        }
-
-        if (mode !== 'head' && mode !== 'body') return;
-
-        // Toggle the specific permission
-        this.permissions[mode] = !this.permissions[mode];
-
-        const head = this.permissions.head;
-        const body = this.permissions.body;
-
-        this._dep('debugManager')?.info?.(`🎥 Camera Permissions Updated: Head=${head}, Body=${body}`);
-
-        // 1. Both Enabled -> Auto-Switch
-        if (head && body) {
-            this._dep('debugManager')?.info?.('🔄 Both modes enabled -> Auto-Switch Active');
-            const prevMode = this._previousMode;
-            this.setAutoSwitch(true);
-            this.hasUsedHead = true;
-            this.hasUsedBody = true;
-            this.autoSwitchEnabled = true;
-            if (!this.activeMode) {
-                // Nothing active yet — start head tracking via detector
-                await this._startDetectorForMode('head');
-            }
-            this._emitModeChangeEvent(prevMode, this.activeMode, 'manual');
-            // If already active, auto-switch is now on (set above)
-            return;
-        }
-
-        // 2. Only Head Enabled -> Force Head
-        if (head && !body) {
-            this._dep('debugManager')?.info?.('👤 Only Head enabled -> Forcing Head Mode');
-            const prevMode = this.activeMode;
-            this.setAutoSwitch(false);
-            if (this.activeMode === 'body') {
-                this._stopDetectorState('body');
-            }
-            if (this.activeMode !== 'head') {
-                await this._startDetectorForMode('head');
-            }
-            if (prevMode !== 'head') {
-                this._emitModeChangeEvent(prevMode, 'head', 'manual');
-            }
-            return;
-        }
-
-        // 3. Only Body Enabled -> Force Body
-        if (!head && body) {
-            this._dep('debugManager')?.info?.('🕺 Only Body enabled -> Forcing Body Mode');
-            const prevMode = this.activeMode;
-            this.setAutoSwitch(false);
-            if (this.activeMode === 'head') {
-                this._stopDetectorState('head');
-            }
-            if (this.activeMode !== 'body') {
-                await this._startDetectorForMode('body');
-            }
-            if (prevMode !== 'body') {
-                this._emitModeChangeEvent(prevMode, 'body', 'manual');
-            }
-            return;
-        }
-
-        // 4. Both Disabled -> Stop Tracking
-        if (!head && !body) {
-            this._dep('debugManager')?.info?.('🛑 All modes disabled -> Stopping Camera');
-            const prevMode = this.activeMode;
-            this.setAutoSwitch(false);
-            // Stop whichever detector is active
-            if (this.activeMode === 'head' && this._dep('headDetector')?.active) {
-                this._dep('headDetector').stop();
-            } else if (this.activeMode === 'body' && this._dep('bodyDetector')?.active) {
-                this._dep('bodyDetector').stop();
-            } else {
-                this.stopMode();
-            }
-
-            // If hand tracking is still active, promote to primary (full frame rate)
-            if (this.permissions.hand && this._handOverlayActive) {
-                this._handPrimaryMode = true;
-                this.targetFPS = this._baseFPS;
-                this._dep('debugManager')?.info?.('🖐️ Hand tracking promoted to primary (full frame rate)');
-            } else if (!this.permissions.hand) {
-                // No hand tracking either — stop camera entirely
-                this.stopMode();
-            }
-
-            // Sync with Electron immediately if available
-            if (this._dep('electronBridge') && typeof this._dep('electronBridge').reportEffectState === 'function') {
-                this._dep('electronBridge').reportEffectState();
-            }
-
-            if (prevMode) {
-                this._emitModeChangeEvent(prevMode, null, 'disabled');
-            }
-            return;
-        }
-
-        // Trigger report for any other state changes
-        if (this._dep('electronBridge') && typeof this._dep('electronBridge').reportEffectState === 'function') {
-            this._dep('electronBridge').reportEffectState();
-        }
-    }
-
-    /**
-     * Start a detector for the given mode, delegating to the detector's start()
-     * which handles internal state setup and calls startMode() with the correct callback.
-     * @param {'head' | 'body'} mode
-     */
-    async _startDetectorForMode(mode) {
+    /** Cold start toward `target` from idle. */
+    async _effectAcquire(eff) {
+        const target = eff.target;
+        const degraded = [];
         try {
-            // Demote hands from primary to overlay when a head/body mode starts
-            if (this._handPrimaryMode) {
-                this._handPrimaryMode = false;
-                this._dep('debugManager')?.info?.('🖐️ Hand tracking demoted to overlay (primary mode starting)');
-                // Reduce FPS slightly for overlay sharing
-                this.targetFPS = Math.max(10, Math.round(this._baseFPS * 0.85));
+            const needsFacePose = target.primary === 'head' || target.primary === 'body';
+            if (needsFacePose) {
+                if (!this.active) await this.initialize();
+            } else {
+                // Hand-only fast path (preserved): no face/pose model loads.
+                if (!this.isAvailable()) {
+                    const e = new Error('Camera not available on this device');
+                    e._errClass = 'no-device';
+                    throw e;
+                }
+                this.active = true;
             }
 
-            if (mode === 'head') {
-                // HeadBobDetector.start() calls SharedCameraManager.startMode('head', this._onResults)
-                await this._dep('headDetector').start();
-            } else if (mode === 'body') {
-                // BodyMotionDetector.start() calls SharedCameraManager.startMode('body', this._onResults)
-                // It also stops head detector if active
-                await this._dep('bodyDetector').start();
+            await this._startStream();
+            await this._ensureModelsFor(target);
+
+            if (target.overlay || target.primary === 'hand') {
+                const ok = await this._ensureHands();
+                if (!ok) {
+                    if (target.primary === 'hand') {
+                        const e = new Error('Hand tracking model failed to load');
+                        e._errClass = 'model';
+                        throw e;
+                    }
+                    degraded.push('hand'); // primary survives, hand wish gets trimmed
+                }
             }
+
+            // Superseded while acquiring? Don't attach stale intent — the
+            // superseding effect is queued right behind us.
+            if (eff.opSeq !== this._machine.state.opSeq) {
+                this._lifecycle('abort-superseded', `acquire op${eff.opSeq}`);
+                return;
+            }
+
+            const achieved = { primary: target.primary, overlay: target.overlay && !degraded.includes('hand') };
+            this._attachConfig({ primary: null, overlay: false }, achieved, eff.reasonTag);
+            this._completion({
+                type: 'ACQUIRE_OK', achieved, opSeq: eff.opSeq,
+                ...(degraded.length ? { degraded } : {})
+            });
         } catch (err) {
-            this._dep('debugManager')?.warn?.(`Failed to start ${mode} detector:`, err?.message || String(err));
+            this._stopStream();
+            if (this.animationFrameId) {
+                cancelAnimationFrame(this.animationFrameId);
+                this.animationFrameId = null;
+            }
+            this._completion({
+                type: 'ACQUIRE_FAIL', opSeq: eff.opSeq,
+                errClass: this._classifyError(err),
+                message: err?.message || String(err)
+            });
         }
     }
 
-    /**
-     * Stop a detector's internal state without killing the camera stream.
-     * Used when switching modes via the permission system.
-     * @param {'head' | 'body'} mode
-     */
-    _stopDetectorState(mode) {
-        if (mode === 'head' && this._dep('headDetector')) {
-            this._dep('headDetector').active = false;
-            this._dep('headDetector').enabled = false;
-            this._dep('headDetector').faceStates = [];
-            this._dep('headDetector').faceSizeHistory = [];
-            this._dep('headDetector').faceSizeCalibrated = false;
-            this._dep('headDetector')._showIndicator?.(false);
-            window.MotionBus?.emit('rhythmSync', null);
-        } else if (mode === 'body' && this._dep('bodyDetector')) {
-            this._dep('bodyDetector').active = false;
-            this._dep('bodyDetector').enabled = false;
-            this._dep('bodyDetector').bodyStates = [];
-            this._dep('bodyDetector')._swayHistory = null;
-            this._dep('bodyDetector')._bounceHistory = null;
-            this._dep('bodyDetector')._showIndicator?.(false);
-            window.MotionBus?.emit('bodyMotion', null);
+    /** Live reconfigure from → to. Failable steps run BEFORE any detach. */
+    async _effectApply(eff) {
+        const { from, to } = eff;
+        const degraded = [];
+        try {
+            if (to.primary === 'head' || to.primary === 'body') {
+                if (!this.active) await this.initialize();
+                await this._ensureModelsFor(to);
+            }
+            const wantHand = to.overlay || to.primary === 'hand';
+            const hadHand = from.overlay || from.primary === 'hand';
+            if (wantHand && !hadHand) {
+                const ok = await this._ensureHands();
+                if (!ok) {
+                    if (to.primary === 'hand') {
+                        const e = new Error('Hand tracking model failed to load');
+                        e._errClass = 'model';
+                        throw e;
+                    }
+                    degraded.push('hand');
+                }
+            }
+            await this._startStream(); // no-op while the stream lives; heals a dead one
+
+            if (eff.opSeq !== this._machine.state.opSeq) {
+                this._lifecycle('abort-superseded', `apply op${eff.opSeq}`);
+                return;
+            }
+
+            const achieved = { primary: to.primary, overlay: to.overlay && !degraded.includes('hand') };
+            this._attachConfig(from, achieved, eff.reasonTag);
+            this._completion({
+                type: 'APPLY_OK', achieved, opSeq: eff.opSeq, reasonTag: eff.reasonTag,
+                ...(degraded.length ? { degraded } : {})
+            });
+        } catch (err) {
+            // Atomic contract: nothing was detached — `from` is still running.
+            this._completion({
+                type: 'APPLY_FAIL', opSeq: eff.opSeq, reasonTag: eff.reasonTag,
+                errClass: this._classifyError(err),
+                message: err?.message || String(err)
+            });
         }
+    }
+
+    /** Teardown: detach consumers, stop loop + stream. Models stay cached. */
+    async _effectStop(eff) {
+        this._attachConfig(eff.from, { primary: null, overlay: false }, eff.reasonTag);
+        if (this.animationFrameId) {
+            cancelAnimationFrame(this.animationFrameId);
+            this.animationFrameId = null;
+        }
+        this.isManualMode = false;
+        this.isProbingBody = false;
+        this._probeIsAutoSwitch = false;
+        this._stopStream();
+        this._dep('debugManager')?.logTransition('camera', 'paused', 'models-cached');
+        if (eff.reasonTag === 'fatal') this._unloadModels(); // pre-machine fatal path = full shutdown
+        this._completion({ type: 'STOP_OK', opSeq: eff.opSeq, reasonTag: eff.reasonTag === 'fatal' ? 'disabled' : eff.reasonTag });
+    }
+
+    /**
+     * Reconfigure live consumers from one config to another. Synchronous and
+     * infallible by design (model loads happened earlier): detector hooks,
+     * result callbacks, FPS pacing, frame loop. Detectors are pure consumers —
+     * _activate/_deactivate are the ONLY lifecycle calls they receive.
+     */
+    _attachConfig(from, to, reasonTag) {
+        const fromHB = (from.primary === 'head' || from.primary === 'body') ? from.primary : null;
+        const toHB = (to.primary === 'head' || to.primary === 'body') ? to.primary : null;
+
+        if (fromHB && fromHB !== toHB) {
+            this._detectorFor(fromHB)?._deactivate?.();
+            if (fromHB === 'head') this.onFaceMeshResults = null;
+            else this.onPoseResults = null;
+        }
+        if (toHB) {
+            this._detectorFor(toHB)?._activate?.();
+            const cb = this._getCallbackForMode(toHB);
+            if (toHB === 'head') { this.onFaceMeshResults = cb; this.hasUsedHead = true; }
+            else { this.onPoseResults = cb; this.hasUsedBody = true; }
+        }
+
+        const fromHand = from.overlay || from.primary === 'hand';
+        const toHand = to.overlay || to.primary === 'hand';
+        if (fromHand && !toHand) {
+            this._handOverlayCallback = null;
+            this._handFrameCounter = 0;
+            this._dep('handDetector')?._deactivate?.();
+            this._dep('debugManager')?.logTransition?.('hand', 'overlay-stopped');
+        } else if (toHand && !fromHand) {
+            this._handOverlayCallback = this._dep('handDetector')?._onResults || null;
+            this._handFrameCounter = 0;
+            this._dep('handDetector')?._activate?.();
+            this._dep('debugManager')?.logTransition?.('hand', 'overlay-started', { frameSkip: this._handFrameSkip });
+        }
+        this._handSuspended = false;
+
+        // FPS pacing: overlay sharing costs ~15%; solo/dedicated runs at base.
+        this.targetFPS = (toHand && toHB)
+            ? Math.max(10, Math.round(this._baseFPS * 0.85))
+            : this._baseFPS;
+
+        // Confidence/auto-switch bookkeeping on primary change (pre-machine
+        // startMode parity: manual switches refresh the cooldown, auto doesn't).
+        if (fromHB !== toHB && toHB) {
+            this.currentConfidence = 1.0;
+            this.lowConfidenceStart = null;
+            this.lastBodyActivity = null;
+            this.isManualMode = reasonTag !== 'auto-switch';
+            if (reasonTag !== 'auto-switch') this.lastSwitchTime = performance.now();
+            this._dep('debugManager')?.logTransition('camera', 'mode-changed', {
+                mode: toHB,
+                switchType: reasonTag === 'auto-switch' ? 'auto-switch' : 'manual switch',
+                manual: this.isManualMode
+            }, { minIntervalMs: 300 });
+        }
+
+        if ((toHB || toHand) && !this.animationFrameId) this._startFrameLoop();
+    }
+
+    _detectorFor(mode) {
+        return mode === 'head' ? this._dep('headDetector')
+            : mode === 'body' ? this._dep('bodyDetector')
+                : null;
+    }
+
+    /**
+     * Ensure the primary's model is loaded, with one delayed re-attempt before
+     * failing (the 2026-05-27 model-race retry, relocated — and unlike the old
+     * detector-layer retry, this one actually re-runs the load).
+     */
+    async _ensureModelsFor(target) {
+        const need = target.primary === 'head' ? 'face' : target.primary === 'body' ? 'pose' : null;
+        if (!need) return;
+        const loaded = () => (need === 'face' ? this.faceMeshLoaded : this.poseLoaded);
+        if (loaded()) return;
+        this._lifecycle('model-retry', need);
+        await new Promise(r => setTimeout(r, 1500));
+        if (need === 'face') {
+            this.faceMesh = await this._loadFaceMesh();
+            this.faceMeshLoaded = !!this.faceMesh;
+        } else {
+            this.pose = await this._loadPose();
+            this.poseLoaded = !!this.pose;
+        }
+        if (!loaded()) {
+            const e = new Error(need === 'face' ? 'Face Mesh model not available' : 'Pose model not available');
+            e._errClass = 'model';
+            throw e;
+        }
+    }
+
+    /** Lazy-load the hands model (first ^ press). Returns success boolean. */
+    async _ensureHands() {
+        if (this.handsLoaded && this.hands) return true;
+        this._dep('commandRegistry')?.showParameterIndicator?.('Loading Hand Tracking...', true);
+        this.hands = await this._loadHands();
+        this.handsLoaded = !!this.hands;
+        return this.handsLoaded;
+    }
+
+    /** Error taxonomy for machine rollback decisions + user messaging. */
+    _classifyError(err) {
+        if (err?._errClass) return err._errClass;
+        const details = [err?.name, err?.message, String(err)].filter(Boolean).join(' | ').toLowerCase();
+        if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError'
+            || details.includes('permission denied') || details.includes('notallowederror')
+            || details.includes('denied')) return 'denied';
+        if (err?.name === 'NotFoundError' || /requested device not found/i.test(err?.message || '')) return 'no-device';
+        if (/metadata never arrived/i.test(err?.message || '')) return 'timeout';
+        if (/not available|not loaded/i.test(err?.message || '')) return 'model';
+        return 'other';
+    }
+
+    /** Unload all models (fatal teardown / explicit shutdown). */
+    _unloadModels() {
+        this.onFaceMeshResults = null;
+        this.onPoseResults = null;
+        if (this._dep('MediaPipeLoader')) this._dep('MediaPipeLoader').unload();
+        if (this._dep('PoseLoader')) this._dep('PoseLoader').unload();
+        if (this._dep('HandsLoader')) this._dep('HandsLoader').unload();
+        this.faceMesh = null;
+        this.pose = null;
+        this.hands = null;
+        this.faceMeshLoaded = false;
+        this.poseLoaded = false;
+        this.handsLoaded = false;
+        this.active = false;
+        this.lastFrameTime = 0;
     }
 
     /**
@@ -460,7 +708,8 @@ class SharedCameraManager {
             // indicator up forever and the failure invisible (console.warn is suppressed
             // here) — the user-facing half of the stuck-startup bug. Replace it with a
             // visible, non-persistent failure message; the retry path is a fresh
-            // toggle (loading/loadPromise are cleared below, so it actually retries).
+            // Shift+7 (loading/loadPromise are cleared below, so it actually retries).
+            this._lifecycle('initialize-failed', err?.message || String(err));
             try {
                 this._dep('commandRegistry')?.showParameterIndicator?.(
                     `📷 Camera failed: ${err?.message || 'unknown error'} — toggle tracking to retry`, false);
@@ -498,7 +747,23 @@ class SharedCameraManager {
         );
     }
 
+    // Camera lifecycle ring (2026-06-11): "the whole camera toggle state is buggy as
+    // hell" — every camera report this week was diagnosed by inference because dumps
+    // carried no transition history. Every lifecycle moment now lands here (cap 80)
+    // and exports in the debug dump (cameraLifecycle). Additive; Camerastein-safe.
+    _lifecycle(event, detail) {
+        try {
+            this.lifecycleLog = this.lifecycleLog || [];
+            this.lifecycleLog.push({
+                t: +((typeof performance !== 'undefined' ? performance.now() : 0) / 1000).toFixed(1),
+                event, ...(detail ? { detail } : {})
+            });
+            if (this.lifecycleLog.length > 80) this.lifecycleLog.shift();
+        } catch (_) { }
+    }
+
     async _doInitialize() {
+        this._lifecycle('initialize');
         this._dep('debugManager')?.logTransition('camera', 'initializing');
         const startTime = performance.now();
 
@@ -515,14 +780,22 @@ class SharedCameraManager {
         this.faceMesh = await this._loadFaceMesh();
         this.faceMeshLoaded = !!this.faceMesh;
 
-        this._dep('debugManager')?.logTransition('camera', 'model-load-pose', null, { minIntervalMs: 300 });
-        if (!this.poseLoaded && this._dep('commandRegistry')?.showParameterIndicator) {
-            this._dep('commandRegistry').showParameterIndicator('Loading Body Tracking...', true);
+        // Body tracking is NOT shipped on the native build (head-only v1) and the pose model
+        // isn't bundled there (build-web.mjs ships face_landmarker.task only), so preloading it
+        // on native just 404s and spams fetch retries. Skip it — head tracking is unaffected, and
+        // body already doesn't work on native, so this is no behaviour change (just less noise).
+        // Web/desktop still preload pose as before.
+        if (!(typeof window !== 'undefined' && window.__PSYDELI_NATIVE_BUILD)) {
+            this._dep('debugManager')?.logTransition('camera', 'model-load-pose', null, { minIntervalMs: 300 });
+            if (!this.poseLoaded && this._dep('commandRegistry')?.showParameterIndicator) {
+                this._dep('commandRegistry').showParameterIndicator('Loading Body Tracking...', true);
+            }
+            this.pose = await this._loadPose();
+            this.poseLoaded = !!this.pose;
         }
-        this.pose = await this._loadPose();
-        this.poseLoaded = !!this.pose;
 
         this.active = true;
+        this._lifecycle('models-ready');
 
         const loadTime = ((performance.now() - startTime) / 1000).toFixed(2);
         this._dep('debugManager')?.logTransition('camera', 'ready', {
@@ -539,6 +812,7 @@ class SharedCameraManager {
             return;
         }
 
+        this._lifecycle('stream-starting');
         this._dep('debugManager')?.logTransition('camera', 'stream-starting');
 
         const deviceInputs = await this.listVideoInputs();
@@ -559,14 +833,21 @@ class SharedCameraManager {
             }
         });
 
+        // Android (esp. Mali GPUs in a Capacitor WebView) shares GPU memory between the camera
+        // textures, MediaPipe, and the main WebGL2 visualization context. Cap capture at 320×240
+        // there to cut texture pressure (MediaPipe downscales for inference anyway) — part of
+        // preventing the camera-on → main-context-loss blank screen. Full 640×480 elsewhere.
+        const _isAndroid = /Android/i.test((typeof navigator !== 'undefined' && navigator.userAgent) || '');
+        const _camW = _isAndroid ? 320 : 640, _camH = _isAndroid ? 240 : 480;
+
         const streamAttempts = [];
         uniqueDeviceIds.forEach(deviceId => {
             streamAttempts.push({
                 constraints: {
                     video: {
                         deviceId: { exact: deviceId },
-                        width: { ideal: 640 },
-                        height: { ideal: 480 }
+                        width: { ideal: _camW },
+                        height: { ideal: _camH }
                     }
                 },
                 deviceId
@@ -578,8 +859,8 @@ class SharedCameraManager {
                 constraints: {
                     video: {
                         facingMode: { ideal: 'user' },
-                        width: { ideal: 640 },
-                        height: { ideal: 480 }
+                        width: { ideal: _camW },
+                        height: { ideal: _camH }
                     }
                 },
                 deviceId: null
@@ -587,8 +868,8 @@ class SharedCameraManager {
             {
                 constraints: {
                     video: {
-                        width: { ideal: 640 },
-                        height: { ideal: 480 }
+                        width: { ideal: _camW },
+                        height: { ideal: _camH }
                     }
                 },
                 deviceId: null
@@ -629,12 +910,12 @@ class SharedCameraManager {
                     // stream that opens but never delivers metadata (camera half-held by
                     // another app/tab, post-sleep camera zombie) parked it FOREVER. With
                     // initialize() caching loadPromise, one hang poisoned every retry
-                    // until reload — the "stuck in waiting for" bug. A rejection here
-                    // flows into the attempt loop's existing catch (stream stopped, next
-                    // constraint attempt tried, errors surfaced).
+                    // until reload — the month-old "stuck in waiting for" bug. A
+                    // rejection here flows into the attempt loop's existing catch
+                    // (stream stopped, next constraint attempt tried, errors surfaced).
                     // COLD-START GRACE (same day, second field report): the session's
                     // FIRST camera open on macOS can exceed 8s (sensor wake + Continuity
-                    // Camera enumeration) — the first toggle always failed while the
+                    // Camera enumeration) — the first '&' press always failed while the
                     // second found warm hardware. The cold session's FIRST attempt gets
                     // 20s; fallback attempts and warmed sessions get the snappy 8s, so a
                     // true zombie still fails in bounded time (~44s worst case, once).
@@ -698,6 +979,7 @@ class SharedCameraManager {
                     this.preferredDeviceId = null;
                 }
 
+                this._lifecycle('stream-ready', `${this.videoElement.videoWidth}x${this.videoElement.videoHeight} attempt ${i + 1}`);
                 this._dep('debugManager')?.logTransition('camera', 'stream-ready', {
                     width: this.videoElement.videoWidth,
                     height: this.videoElement.videoHeight,
@@ -709,6 +991,7 @@ class SharedCameraManager {
                 return;
             } catch (err) {
                 lastError = err;
+                this._lifecycle('attempt-failed', `${i + 1}/${streamAttempts.length}: ${err?.message || err?.name || String(err)}`);
                 const errorDetails = [err?.name, err?.message, String(err)]
                     .filter(Boolean)
                     .join(' | ')
@@ -726,6 +1009,14 @@ class SharedCameraManager {
                 // unclassified errors abort the whole pass below, so attempt 1's
                 // timeout never even tried the remaining constraints.
                 const isMetaTimeout = /metadata never arrived/i.test(err?.message || '');
+                // OverconstrainedError: a constraint no device can satisfy — almost always the
+                // exact-deviceId FIRST attempt against a stale localStorage preferredDeviceId, or a
+                // deviceId Chromium won't honour with { exact } (seen on Electron/macOS: camera never
+                // activated because attempt 1 aborted the whole ladder). MUST be fallback-class so the
+                // ladder falls through to facingMode → size-only → { video:true } (which cannot
+                // over-constrain) instead of throwing on attempt 1. Andy 2026-07-04.
+                const isOverconstrained = err?.name === 'OverconstrainedError'
+                    || errorDetails.includes('overconstrained');
 
                 this._stopStream();
                 lastNotFound = isNotFound;
@@ -740,19 +1031,19 @@ class SharedCameraManager {
                         minIntervalMs: 300
                     });
                     this._dep('debugManager')?.warn?.(
-                        'Camera permission denied. Check macOS Settings > Privacy & Security > Camera and ensure Psychodeli+ is allowed.'
+                        'Camera permission denied. Check macOS Settings > Privacy & Security > Camera and ensure this app is allowed.'
                     );
                     throw err;
                 }
 
-                if ((isNotFound || isNoFrames) && attempt.deviceId && attempt.deviceId === this.preferredDeviceId) {
+                if ((isNotFound || isNoFrames || isOverconstrained) && attempt.deviceId && attempt.deviceId === this.preferredDeviceId) {
                     try {
                         localStorage.removeItem('camera.preferredDeviceId');
                     } catch (_) { }
                     this.preferredDeviceId = null;
                 }
 
-                if (!(isNotFound || isNoFrames || isMetaTimeout) || i === streamAttempts.length - 1) {
+                if (!(isNotFound || isNoFrames || isMetaTimeout || isOverconstrained) || i === streamAttempts.length - 1) {
                     this._dep('debugManager')?.logTransition('camera', 'stream-failed', {
                         attempt: i + 1,
                         totalAttempts: streamAttempts.length,
@@ -784,35 +1075,8 @@ class SharedCameraManager {
         }
     }
 
-    _deactivateTrackingCommandForMode(mode) {
-        try {
-            if (mode === 'head') {
-                const command = this._dep('commandRegistry')?.commands?.['*'];
-                if (command && typeof command.deactivate === 'function') {
-                    command.deactivate({ silent: true });
-                } else {
-                    this._dep('headDetector')?.stop?.();
-                }
-                if (this._dep('commandRegistry')?.activeEffects) {
-                    this._dep('commandRegistry').activeEffects['Head Tracking'] = false;
-                }
-            } else if (mode === 'body') {
-                const command = this._dep('commandRegistry')?.commands?.['&'];
-                if (command && typeof command.deactivate === 'function') {
-                    command.deactivate({ silent: true });
-                } else {
-                    this._dep('bodyDetector')?.stop?.();
-                }
-                if (this._dep('commandRegistry')?.activeEffects) {
-                    this._dep('commandRegistry').activeEffects['Body Tracking'] = false;
-                }
-            }
-        } catch (_) {
-            // Best-effort cleanup
-        }
-    }
-
     _stopStream() {
+        if (this.stream || this.videoElement) this._lifecycle('stream-stopped');
         if (this.stream) {
             this.stream.getTracks().forEach(track => track.stop());
             this.stream = null;
@@ -919,294 +1183,101 @@ class SharedCameraManager {
     }
 
     /**
-     * Start hand overlay — runs concurrently with primary head/body mode.
-     * Hands model is loaded lazily on first call.
-     * @param {Function} resultsCallback - HandPoseDetector._onResults
+     * DEPRECATED shims — hand lifecycle is a machine transition now. Kept
+     * callable for Camerastein-era external code; HandPoseDetector no longer
+     * calls these.
      */
-    async _startHandOverlay(resultsCallback) {
-        if (this._handOverlayActive) return;
-
-        // Ensure camera is streaming. If no primary mode has initialized,
-        // just start the stream without loading face/pose models — hand-only
-        // mode doesn't need them.
-        if (!this.active) {
-            if (!this.isAvailable()) {
-                throw new Error('Camera not available on this device');
-            }
-            // Mark active without full initialize (skip face/pose model loading)
-            this.active = true;
-        }
-        await this._startStream();
-
-        // Lazy-load hands model on first activation
-        if (!this.handsLoaded) {
-            if (this._dep('commandRegistry')?.showParameterIndicator) {
-                this._dep('commandRegistry').showParameterIndicator('Loading Hand Tracking...', true);
-            }
-            this.hands = await this._loadHands();
-            this.handsLoaded = !!this.hands;
-        }
-
-        if (!this.handsLoaded || !this.hands) {
-            throw new Error('Hand tracking model failed to load');
-        }
-
-        this._handOverlayCallback = resultsCallback;
-        this._handOverlayActive = true;
-        this._handFrameCounter = 0;
-
-        if (!this.activeMode) {
-            // No primary mode — hands run as primary at full frame rate.
-            // Start the frame loop (normally started by startMode for head/body).
-            this._handPrimaryMode = true;
-            this.targetFPS = this._baseFPS;
-            if (!this.animationFrameId) {
-                this._startFrameLoop();
-            }
-            this._dep('debugManager')?.info?.('🖐️ Hand tracking started as primary (full frame rate)');
-        } else {
-            // Primary mode active — hands run as throttled overlay
-            this._handPrimaryMode = false;
-            this.targetFPS = Math.max(10, Math.round(this._baseFPS * 0.85));
-        }
-
-        this._dep('debugManager')?.logTransition?.('hand', 'overlay-started', { frameSkip: this._handFrameSkip });
+    async _startHandOverlay(_resultsCallback) {
+        return this.setModeDesired('hand', true);
     }
 
-    /**
-     * Stop hand overlay — primary mode continues unaffected.
-     */
     _stopHandOverlay() {
-        if (!this._handOverlayActive) return;
-
-        this._handOverlayActive = false;
-        this._handOverlayCallback = null;
-        this._handFrameCounter = 0;
-
-        // Restore primary FPS
-        this.targetFPS = this._baseFPS;
-
-        this._dep('debugManager')?.logTransition?.('hand', 'overlay-stopped');
+        this.setModeDesired('hand', false);
     }
 
     /**
-     * Start processing frames with specified mode
+     * DEPRECATED shim — mode startup is a machine transition now. The callback
+     * argument is ignored: result callbacks are fetched from the detector
+     * singletons at attach time (_getCallbackForMode).
      * @param {'head' | 'body'} mode
-     * @param {Function} resultsCallback
-     * @param {boolean} isAutoSwitch - True if triggered by auto-switch (skip cooldown reset)
      */
-    async startMode(mode, resultsCallback, isAutoSwitch = false) {
-        if (!this.active) {
-            await this.initialize();
-        }
+    async startMode(mode, _resultsCallback, _isAutoSwitch = false) {
+        if (mode !== 'head' && mode !== 'body') return;
+        await this.setModeDesired(mode, true);
+    }
 
-        await this._startStream();
+    // ------------------------------------------------------------------
+    // Body probe — POLICY, not ownership. While head runs with auto-switch
+    // armed, short pose bursts check for real arm movement; a confirmed
+    // burst dispatches AUTO_SWITCH('body') into the machine. The probe
+    // never flips detector or machine state by itself.
+    // ------------------------------------------------------------------
 
-        // Respect permission toggles — never activate a mode the user disabled.
-        // permissions are set by togglePermission() BEFORE startMode() is called,
-        // so this is safe even for the initial activation path.
-        if (this.permissions[mode] === false) {
-            this._dep('debugManager')?.info?.(`🚫 startMode('${mode}') blocked: permission disabled`);
-            return;
-        }
+    /**
+     * Begin a probing window: route pose results to the body detector so its
+     * state populates, auto-revert after the window if nothing significant.
+     * Prevents shoulder micro-movements from stealing the camera while seated.
+     * @param {boolean} isAutoSwitch - confidence-triggered vs periodic peek
+     * @param {number} [windowMs] - probe duration (default 500 auto / 1000 manual)
+     */
+    _beginBodyProbe(isAutoSwitch, windowMs) {
+        if (this.isProbingBody) return;
+        if (!this.permissions.head || !this.permissions.body) return;
+        if (this.phase !== 'running' || this.activeMode !== 'head') return;
+        if (!this.poseLoaded || !this.pose) return;
+        const probeTimeout = windowMs || (isAutoSwitch ? 500 : 1000);
+        this._dep('debugManager')?.info?.(`👀 Peeking Body Mode (${isAutoSwitch ? 'auto' : 'manual'}, ${probeTimeout}ms window)...`);
+        this.isProbingBody = true;
+        this.probeStartTime = performance.now();
+        this._probeIsAutoSwitch = isAutoSwitch;
+        this.onPoseResults = this._getCallbackForMode('body');
 
-        // Apply manual intent immediately
-        this.isManualMode = !isAutoSwitch;
+        setTimeout(() => {
+            if (!this.isProbingBody) return;
+            this._dep('debugManager')?.info?.('❌ Peek failed: No significant body action. Reverting.');
+            this._probeRevert();
+        }, probeTimeout);
+    }
 
-        // -------------------------------------------------------------------------
-        // ACTIVE PEEK LOGIC: Verify Body Activity before full switch
-        // -------------------------------------------------------------------------
-        // Before switching from Head → Body, briefly suppress face mesh and run
-        // a few pose frames to verify the user is actually making big arm movements.
-        // This prevents shoulder micro-movements and head weaving from triggering
-        // body mode while seated.
-        //
-        // Works for BOTH manual toggle and auto-switch attempts.
-        // Auto-switch gets a shorter probe window (500ms) since it's already
-        // waited through the confidence timeout.
-        // Only probe when both modes are permitted (auto-switch scenario).
-        // When the user explicitly chose body-only (permissions.head=false),
-        // skip the probe — don't make them prove they're dancing.
-        if (mode === 'body' && this.activeMode === 'head' && !this.isProbingBody
-            && this.permissions.head && this.permissions.body) {
-            const probeTimeout = isAutoSwitch ? 500 : 1000;
-            this._dep('debugManager')?.info?.(`👀 Peeking Body Mode (${isAutoSwitch ? 'auto' : 'manual'}, ${probeTimeout}ms window)...`);
-            this.isProbingBody = true;
-            this.probeStartTime = performance.now();
-            this._probeIsAutoSwitch = isAutoSwitch;
-
-            // Hook up results callback temporarily so we get data
-            this.onPoseResults = resultsCallback;
-
-            // Auto-cancel probe if no big arm activity found
-            setTimeout(() => {
-                if (this.isProbingBody) {
-                    this._dep('debugManager')?.info?.('❌ Peek failed: No significant body action. Reverting.');
-                    this.isProbingBody = false;
-                    this._probeIsAutoSwitch = false;
-                    // Reset low-confidence timer so we don't immediately re-trigger
-                    this.lowConfidenceStart = null;
-                    this.lastSwitchTime = performance.now();
-                    // If we were in head mode AND it's still permitted, ensure it's fully active
-                    if (this.activeMode === 'head' && this.permissions.head) {
-                        this._syncDetectorState('head');
-                    }
-                }
-            }, probeTimeout);
-            return; // Exit here. Loop will handle the probe.
-        }
-
-        // Validate mode is available BEFORE setting active state
-        // This prevents "Stuck Mode" where activeMode is set but model fails to load/run
-        if (mode === 'head' && !this.faceMeshLoaded) {
-            throw new Error('Face Mesh model not available');
-        }
-        if (mode === 'body' && !this.poseLoaded) {
-            throw new Error('Pose model not available');
-        }
-
-        // Apply mode
-        const wasActive = this.activeMode !== null;
-        this._previousMode = this.activeMode;
-        this.activeMode = mode;
-
-        // If we were probing, we are now committed to a mode.
-        if (this.isProbingBody) {
-            this.isProbingBody = false;
-        }
-
-        // Sync detector states (wakes up HeadBobDetector or BodyMotionDetector)
-        this._syncDetectorState(mode);
-
-        // Track which modes user has tried (for auto-switch eligibility)
-        if (mode === 'head') {
-            this.hasUsedHead = true;
-            this.onFaceMeshResults = resultsCallback;
-        } else {
-            this.hasUsedBody = true;
-            this.onPoseResults = resultsCallback;
-        }
-
-        // Enable auto-switch once user has tried both modes
-        if (this.hasUsedHead && this.hasUsedBody && !this.autoSwitchEnabled) {
-            this.autoSwitchEnabled = true;
-            this._dep('debugManager')?.logTransition('camera', 'auto-switch-eligible');
-        }
-
-        // Reset confidence tracking on mode change
-        this.currentConfidence = 1.0;
+    /** Probe window closed without a switch: clear pose leakage, set cooldown. */
+    _probeRevert() {
+        this.isProbingBody = false;
+        this._probeIsAutoSwitch = false;
         this.lowConfidenceStart = null;
-        this.lastBodyActivity = null; // Reset inactivity timer
-
-        if (!isAutoSwitch) {
-            this.lastSwitchTime = performance.now();
-        }
-
-        // Start frame processing if not already running.
-        // Always restart if the loop died (animationFrameId cleared).
-        if (!wasActive || !this.animationFrameId) {
-            this._startFrameLoop();
-        }
-
-        const switchType = isAutoSwitch ? 'auto-switch' : (this.isManualMode ? 'manual switch' : 'instant switch');
-        this._dep('debugManager')?.logTransition('camera', 'mode-changed', {
-            mode,
-            switchType,
-            manual: this.isManualMode
-        }, {
-            minIntervalMs: 300
-        });
-    }
-
-    /**
-     * Unify detector state synchronization
-     * @param {'head' | 'body' | null} mode 
-     */
-    _syncDetectorState(mode) {
-        // Handle Head Mode
-        if (this._dep('headDetector')) {
-            const shouldBeActive = mode === 'head';
-            if (this._dep('headDetector').active !== shouldBeActive) {
-                this._dep('headDetector').active = shouldBeActive;
-                this._dep('headDetector').enabled = shouldBeActive;
-                this._dep('headDetector')._showIndicator?.(shouldBeActive);
-                if (!shouldBeActive) window.MotionBus?.emit('rhythmSync', null);
-            }
-        }
-
-        // Handle Body Mode
-        if (this._dep('bodyDetector')) {
-            const shouldBeActive = mode === 'body' || this.isProbingBody;
-            if (this._dep('bodyDetector').active !== shouldBeActive) {
-                this._dep('bodyDetector').active = shouldBeActive;
-                this._dep('bodyDetector').enabled = shouldBeActive;
-                this._dep('bodyDetector')._showIndicator?.(shouldBeActive);
-                if (!shouldBeActive) window.MotionBus?.emit('bodyMotion', null);
-            }
+        this.lastSwitchTime = performance.now();
+        if (this.activeMode !== 'body') {
+            this.onPoseResults = null;
+            // Payload contract: probe-leaked body state must not linger as a
+            // zombie on the bus. Null means null.
+            window.MotionBus?.emit('bodyMotion', null);
         }
     }
 
+    /** Probe confirmed real body action: commit the switch via the machine. */
+    _commitBodyProbe(wasAutoSwitch) {
+        this.isProbingBody = false;
+        this._probeIsAutoSwitch = false;
+        this._dep('debugManager')?.info?.(`✅ Peek confirmed: Switching to Body Mode! (${wasAutoSwitch ? 'auto' : 'manual'})`);
+        this._commandQueued({ type: 'AUTO_SWITCH', to: 'body' });
+    }
+
     /**
-     * Stop current mode (keep models loaded).
-     * Callbacks are preserved so they survive stop/restart cycles.
-     * They are only nulled in shutdown().
+     * DEPRECATED shim — stops the current primary mode via the machine.
+     * (Pre-machine this also silently killed the stream out from under a
+     * running hand overlay — one of the zombie sources. Hand now survives
+     * a primary-mode stop, exactly as the arbitration table says it should.)
      */
     stopMode() {
-        this._previousMode = this.activeMode;
-        this.activeMode = null;
-        this.isManualMode = false;
-        this._syncDetectorState(null);
-
-        // NOTE: Do NOT null callbacks here — they need to survive mode switches.
-        // Callbacks are only nulled in shutdown().
-
-        if (this.animationFrameId) {
-            cancelAnimationFrame(this.animationFrameId);
-            this.animationFrameId = null;
-        }
-
-        this._stopStream();
-
-        this._dep('debugManager')?.logTransition('camera', 'paused', 'models-cached');
+        const mode = this.activeMode;
+        if (mode) this.setModeDesired(mode, false);
     }
 
     /**
-     * Fully shutdown and release all resources
+     * Full shutdown: all modes off, stream stopped, models unloaded.
      */
-    shutdown() {
-        this.stopMode();
-
-        // Stop hand overlay if active
-        this._stopHandOverlay();
-        this._dep('handDetector')?.stop();
-
-        // Null callbacks only on full shutdown (not in stopMode)
-        this.onFaceMeshResults = null;
-        this.onPoseResults = null;
-
-        // Stop camera stream (full shutdown)
-        this._stopStream();
-
-        // Unload models
-        if (this._dep('MediaPipeLoader')) {
-            this._dep('MediaPipeLoader').unload();
-        }
-        if (this._dep('PoseLoader')) {
-            this._dep('PoseLoader').unload();
-        }
-        if (this._dep('HandsLoader')) {
-            this._dep('HandsLoader').unload();
-        }
-
-        this.faceMesh = null;
-        this.pose = null;
-        this.hands = null;
-        this.faceMeshLoaded = false;
-        this.poseLoaded = false;
-        this.handsLoaded = false;
-        this.active = false;
-        this.lastFrameTime = 0;
-
+    async shutdown() {
+        await this._command({ type: 'SET_DESIRED', desired: { head: false, body: false, hand: false } });
+        this._unloadModels();
         this._dep('debugManager')?.logTransition('camera', 'shutdown');
     }
 
@@ -1285,34 +1356,9 @@ class SharedCameraManager {
                             now - this._lastBodyProbeTime > this.autoSwitchConfig.bodyProbeIntervalMs &&
                             now - this.lastSwitchTime > this.autoSwitchConfig.cooldownMs) {
                             this._lastBodyProbeTime = now;
-
-                            // Trigger a 300ms burst of body frames (handled by the "Probing" block below)
-                            // This provides consecutive frames for velocity calculation (dt ~50ms),
-                            // unlike the single-frame snapshot which result in dt ~3000ms.
-                            if (!this.isProbingBody) {
-                                this._dep('debugManager')?.info?.('👀 Triggering periodic body probe (300ms)...');
-                                this.isProbingBody = true;
-                                this.probeStartTime = now;
-                                this._probeIsAutoSwitch = true;
-
-                                // Hook up callback
-                                const poseCallback = this._getCallbackForMode('body');
-                                if (poseCallback) this.onPoseResults = poseCallback;
-
-                                // Auto-cancel after 300ms (handled by existing timeout logic in startMode? 
-                                // No, we need to set the timeout here since we aren't calling startMode yet)
-                                setTimeout(() => {
-                                    if (this.isProbingBody) {
-                                        // console.log('❌ Probe finished (no switch triggered).'); 
-                                        this.isProbingBody = false;
-                                        this._probeIsAutoSwitch = false;
-                                        // Restore Head callback if we didn't switch
-                                        if (this.activeMode === 'head') {
-                                            this._syncDetectorState('head');
-                                        }
-                                    }
-                                }, 500);
-                            }
+                            // Short pose burst → consecutive frames for velocity
+                            // calculation (dt ~50ms vs ~3000ms single snapshots).
+                            this._beginBodyProbe(true, 500);
                         }
                     }
 
@@ -1333,18 +1379,14 @@ class SharedCameraManager {
                             const isSignificantMove = (bs?.wristVelocity > sittingNoise) && (bs?.elbowVelocity > elbowThreshold);
 
                             if (bs && (isSignificantMove || bs.armsRaised)) {
-                                const wasAutoSwitch = this._probeIsAutoSwitch;
-                                this._probeIsAutoSwitch = false;
-                                this._dep('debugManager')?.info?.(`✅ Peek confirmed: Switching to Body Mode! (${wasAutoSwitch ? 'auto' : 'manual'})`);
-                                // Commit to switch — pass isAutoSwitch through so cooldown is set correctly
-                                this.startMode('body', this.onPoseResults, wasAutoSwitch);
+                                this._commitBodyProbe(this._probeIsAutoSwitch);
                             }
                         }
                     }
 
                     // Hand tracking — full rate when primary, throttled when overlay.
                     // Separate try/catch so hand errors never affect primary tracking.
-                    if (this._handOverlayActive && this.hands) {
+                    if (this._handOverlayActive && !this._handSuspended && this.hands) {
                         // Primary mode: process every frame. Overlay mode: every Nth frame.
                         const shouldProcess = this._handPrimaryMode
                             || (++this._handFrameCounter >= this._handFrameSkip && (this._handFrameCounter = 0, true));
@@ -1355,10 +1397,10 @@ class SharedCameraManager {
                                 const msg = handErr?.message || String(handErr);
                                 if (this._isFatalFrameError(handErr)) {
                                     this._dep('debugManager')?.warn?.('🖐️ Hand tracking fatal error, disabling:', msg);
-                                    this._stopHandOverlay();
-                                    this.permissions.hand = false;
-                                    this._handPrimaryMode = false;
-                                    this._dep('handDetector')?.stop();
+                                    // Suspend hand sends THIS frame; the machine
+                                    // detaches hands properly right behind it.
+                                    this._handSuspended = true;
+                                    this._commandQueued({ type: 'HAND_FATAL', message: msg });
                                 }
                             }
                         }
@@ -1368,10 +1410,10 @@ class SharedCameraManager {
                     const isFatal = this._isFatalFrameError(e);
 
                     if (isFatal) {
-                        const failedMode = this.activeMode;
                         this._dep('debugManager')?.warn?.('Fatal frame processing error; stopping tracking mode:', errorMessage);
-                        this.shutdown();
-                        this._deactivateTrackingCommandForMode(failedMode);
+                        // The stop effect cancels the loop, stops the stream and
+                        // unloads models (fatal class); UI flags sync post-settle.
+                        this._commandQueued({ type: 'FATAL', message: errorMessage });
                         return;
                     }
 
@@ -1520,17 +1562,16 @@ class SharedCameraManager {
         if (newMode === 'head' && !this.faceMeshLoaded) return;
         if (newMode === 'body' && !this.poseLoaded) return;
 
-        // Perform the switch via startMode (isAutoSwitch = true)
-        // Use _getCallbackForMode to lazily fetch from detector instances (survives stopMode nulling)
-        const callback = this._getCallbackForMode(newMode) || (newMode === 'head' ? this.onFaceMeshResults : this.onPoseResults);
-        this.startMode(newMode, callback, true).catch(err => {
-            this._dep('debugManager')?.warn?.(`[AutoSwitch] Failed to switch to ${newMode}:`, err?.message || String(err));
-            // Optional: Disable auto-switch if it keeps failing?
-            // this.setAutoSwitch(false); 
-        });
-
-        // Emit transition event (bus + DOM)
-        this._emitModeChangeEvent(this._previousMode, newMode, 'auto-switch');
+        this._dep('debugManager')?.info?.(`[AutoSwitch] ${reason} → ${newMode}`);
+        if (newMode === 'body') {
+            // Body direction must prove real arm movement first (active peek);
+            // a confirmed probe dispatches AUTO_SWITCH('body') into the machine.
+            this._beginBodyProbe(true, 500);
+        } else {
+            // Head direction is direct — the machine applies the switch and
+            // emits the cameraModeChange event itself.
+            this._commandQueued({ type: 'AUTO_SWITCH', to: 'head' });
+        }
     }
 
     /**
@@ -1549,6 +1590,9 @@ class SharedCameraManager {
         return {
             active: this.active,
             mode: this.activeMode,
+            phase: this.phase,
+            live: { ...this._machine.state.live },
+            desired: { ...this._machine.state.desired },
             faceMeshLoaded: this.faceMeshLoaded,
             poseLoaded: this.poseLoaded,
             handsLoaded: this.handsLoaded,

@@ -52,6 +52,20 @@ class HandPoseDetector {
             this.LANDMARKS.PINKY_MCP
         ];
 
+        // Finger joint chains for per-finger curl computation [MCP, PIP, DIP, TIP]
+        this._fingerChains = [
+            [this.LANDMARKS.THUMB_CMC, this.LANDMARKS.THUMB_MCP, this.LANDMARKS.THUMB_IP, this.LANDMARKS.THUMB_TIP],
+            [this.LANDMARKS.INDEX_MCP, this.LANDMARKS.INDEX_PIP, this.LANDMARKS.INDEX_DIP, this.LANDMARKS.INDEX_TIP],
+            [this.LANDMARKS.MIDDLE_MCP, this.LANDMARKS.MIDDLE_PIP, this.LANDMARKS.MIDDLE_DIP, this.LANDMARKS.MIDDLE_TIP],
+            [this.LANDMARKS.RING_MCP, this.LANDMARKS.RING_PIP, this.LANDMARKS.RING_DIP, this.LANDMARKS.RING_TIP],
+            [this.LANDMARKS.PINKY_MCP, this.LANDMARKS.PINKY_PIP, this.LANDMARKS.PINKY_DIP, this.LANDMARKS.PINKY_TIP]
+        ];
+
+        // Per-finger state keys (parallel to _fingerChains)
+        this._curlKeys = ['thumbCurl', 'indexCurl', 'middleCurl', 'ringCurl', 'pinkyCurl'];
+        this._velKeys = ['thumbVelocity', 'indexVelocity', 'middleVelocity', 'ringVelocity', 'pinkyVelocity'];
+        this._extKeys = [null, 'indexExtension', 'middleExtension', 'ringExtension', 'pinkyExtension']; // thumb uses thumbExtension
+
         // Per-hand tracking history for velocity calculation
         this._handHistories = [[], []]; // [leftHand, rightHand]
         this._historyMaxLength = 40; // ~2s at 20fps overlay rate
@@ -84,6 +98,50 @@ class HandPoseDetector {
             pinchDelta: 0,          // Rate of change of pinchStrength
             spreadDelta: 0,         // Rate of change of fingerSpread
 
+            // Per-finger curl (0=extended, 1=fully curled) — MCP-PIP-DIP-TIP chain
+            thumbCurl: 0,
+            indexCurl: 0,
+            middleCurl: 0,
+            ringCurl: 0,
+            pinkyCurl: 0,
+
+            // Per-finger velocity (individual tip speeds, not RMS aggregate)
+            thumbVelocity: 0,
+            indexVelocity: 0,
+            middleVelocity: 0,
+            ringVelocity: 0,
+            pinkyVelocity: 0,
+
+            // Per-finger extension (tip distance from palm center)
+            indexExtension: 0,
+            middleExtension: 0,
+            ringExtension: 0,
+            pinkyExtension: 0,
+
+            // Derived inter-finger signals
+            fingerWave: 0,          // 0-1: phase offset between sequential finger curls
+            curlVariance: 0,        // 0-1: how different fingers are from each other
+            dominantFinger: 0,      // 0-1: which finger has highest velocity (0=thumb, 0.25=index, etc.)
+
+            // Percussive strike (air-drum): discrete downward-strike events,
+            // detected from RAW wrist velocity (bypasses the EMA smoothing).
+            lastStrike: null,       // { intensity, hand, t } | null — most recent strike
+            strikeCount: 0,         // cumulative strikes this session
+            strikeEnergy: 0,        // 0-1: decaying envelope of recent strike intensity.
+                                    // UNGATED by confidence — the reliable, intensity-aware
+                                    // drumming signal for the engagement/reward loop (handEng
+                                    // is confidence-gated + smoothed → flickers off mid-drum).
+
+            // Thumbs-up / thumbs-down deliberate-feedback gesture (geometry only).
+            // A held + centered + near-camera thumb pose charges thumbCharge 0→1;
+            // at full charge the detector fires onGesture('thumbConfirm', {direction})
+            // and the host maps it to user sentiment (up=good, down=bad). The charge
+            // also drives a progressive visual cue (see _applyDirectControls).
+            thumbDirection: 0,      // +1 = thumb up, -1 = thumb down, 0 = none
+            thumbConfidence: 0,     // 0-1: how cleanly the thumb pose reads (geometry)
+            thumbCentered: false,   // hand near frame center AND close to camera
+            thumbCharge: 0,         // 0-1: progressive dwell toward confirmation
+
             // Meta
             confidence: 0,
             dominantHand: 0,        // 0=left, 1=right (by larger motion)
@@ -98,12 +156,35 @@ class HandPoseDetector {
         // EMA smoothing factor for continuous signals
         this._ema = 0.85;
 
+        // ── Air-drum strike detection (raw wrist y-velocity, bypasses EMA) ──
+        // Percussive downward strikes are <80ms transients the smoothed gesture
+        // path can't resolve. Track the dominant hand's wrist (landmark 0)
+        // y-velocity un-smoothed and fire on a downward peak + deceleration/reversal
+        // (the "hit point" at the bottom of the stroke). Onset detector for hands.
+        this._strikePrevWristY = null;  // previous-frame wrist y (normalized, +down)
+        this._strikePeakVy = 0;         // peak downward velocity in the current descent
+        this._strikeDescending = false; // currently mid downward stroke
+        this._lastStrikeTime = 0;       // debounce timestamp
+
         // Direct control state (Phase 3)
         this._directControlEnabled = true;
         this._lastFistTime = 0;        // Edge trigger cooldown
         this._lastPalmFlashTime = 0;   // Edge trigger cooldown
         this._edgeCooldownMs = 1500;
         this._prevSpreadForFlash = 0;  // For rapid spread detection
+
+        // ── Thumbs-up/down feedback gesture (deliberate, dwell-confirmed) ──
+        // Geometry-only classification (extended thumb + curled fingers + vertical
+        // sign of the thumb tip). A high-confidence, centered, held pose charges
+        // thumbCharge with a time-based envelope; at full charge it fires
+        // onGesture('thumbConfirm', {direction}) ONCE, then latches until the user
+        // releases the pose (prevents repeat-records while held). Time-based so it
+        // behaves identically at the 3.3Hz overlay rate or 20fps dedicated rate.
+        // Live tuning via window.__thumb* flags (see _extractThumbPose / _updateThumbCharge).
+        this._thumbChargeLastT = 0;
+        this._lastThumbConfirmTime = 0;
+        this._thumbConfirmCooldownMs = 800;
+        this._thumbLatched = false;    // true after a confirm until pose released
 
         // Bind
         this._onResults = this._onResults.bind(this);
@@ -131,55 +212,43 @@ class HandPoseDetector {
     }
 
     /**
-     * Start hand overlay detection.
-     * Does NOT call startMode() — uses the overlay-specific path in SharedCameraManager.
+     * Request hand tracking via the camera machine. DEPRECATED as a lifecycle
+     * authority — detectors are pure consumers now; SharedCameraManager calls
+     * _activate/_deactivate when ownership actually changes. Overlay vs
+     * dedicated arbitration is the machine's job.
      */
     async start() {
-        if (this.active) return;
-
-        this._dep('debugManager')?.info?.('🖐️ Starting Hand Pose Detector (overlay mode)...');
-
-        try {
-            if (!this._dep('cameraManager')) {
-                throw new Error('SharedCameraManager not available');
-            }
-
-            // Start as overlay — concurrent with primary mode
-            await this._dep('cameraManager')._startHandOverlay(this._onResults);
-
-            this.active = true;
-            this.enabled = true;
-
-            this._dep('debugManager')?.info?.('✅ Hand Pose Detector active (overlay)');
-            this._showIndicator(true);
-
-        } catch (error) {
-            this._dep('debugManager')?.warn?.('Failed to start Hand Pose Detector:', error);
-            this.stop();
-
-            // Toast error to user
-            if (this._dep('commandRegistry')?.showParameterIndicator) {
-                this._dep('commandRegistry').showParameterIndicator('🖐️ Hand tracking unavailable');
-            }
-            throw error;
+        const r = await this._dep('cameraManager')?.setModeDesired?.('hand', true);
+        if (!r?.ok) {
+            this._dep('commandRegistry')?.showParameterIndicator?.('🖐️ Hand tracking unavailable');
+            throw new Error('Hand tracking failed to start');
         }
     }
 
-    /**
-     * Stop hand overlay detection.
-     * Primary mode (head/body) continues unaffected.
-     */
+    /** Release hand tracking via the camera machine. */
     stop() {
+        this._dep('cameraManager')?.setModeDesired?.('hand', false);
+    }
+
+    /** Machine hook: hands attached (overlay or dedicated). Consumer setup only. */
+    _activate() {
+        if (this.active) return;
+        this.active = true;
+        this.enabled = true;
+        this._dep('debugManager')?.info?.('✅ Hand Pose Detector active');
+        this._showIndicator(true);
+    }
+
+    /**
+     * Machine hook: hands detached. Clears rolling state and nulls the hand
+     * channel — payload contract: null means null. This is the structural fix
+     * for the 9152e5dc zombie ({handCount:0} payloads that read eternally live).
+     */
+    _deactivate() {
         if (!this.active) return;
-
-        this._dep('debugManager')?.info?.('🛑 Stopping Hand Pose Detector');
-
         this.active = false;
         this.enabled = false;
 
-        this._dep('cameraManager')?._stopHandOverlay();
-
-        // Clear state
         this._handHistories = [[], []];
         this._prevFingerPositions = [null, null];
         this._lowConfidenceStart = null;
@@ -212,10 +281,21 @@ class HandPoseDetector {
     _onResults(results) {
         const now = performance.now();
 
+        // Decay the strike-energy envelope every frame (incl. no-hands frames) so it
+        // falls off ~1-2s after drumming stops, independent of frame rate.
+        this._decayStrikeEnergy(now);
+
         if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
             // No hands detected
             this.state.confidence = 0;
             this.state.handCount = 0;
+
+            // No hand → thumb gesture inactive; let any in-progress charge bleed off
+            // (decays the dwell so a momentary occlusion doesn't bank progress).
+            this.state.thumbDirection = 0;
+            this.state.thumbConfidence = 0;
+            this.state.thumbCentered = false;
+            this._updateThumbCharge(now);
 
             // Low-confidence timeout
             if (!this._lowConfidenceStart) {
@@ -262,6 +342,15 @@ class HandPoseDetector {
         const confidences = handedness.map(h => h?.score ?? 0.5);
         this.state.confidence = Math.max(...confidences);
 
+        // Store raw landmark positions for visualization (21 {x,y,z} per hand)
+        // Use Array.from — MediaPipe landmarks may not be a standard Array
+        this.state.landmarks = Array.from(dominant, lm => ({ x: lm.x, y: lm.y, z: lm.z || 0 }));
+        if (hands.length === 2) {
+            this.state.landmarks2 = Array.from(hands[1 - dominantIdx], lm => ({ x: lm.x, y: lm.y, z: lm.z || 0 }));
+        } else {
+            this.state.landmarks2 = null;
+        }
+
         // ── Extract signals from dominant hand ──
         this._extractFingerSpread(dominant);
         this._extractPinch(dominant);
@@ -272,8 +361,17 @@ class HandPoseDetector {
         this._extractHandPosition(dominant);
         this._extractThumbExtension(dominant);
 
-        // Finger velocity from dominant hand
+        // Finger velocity from dominant hand (also populates per-finger velocities)
         this.state.fingerVelocity = this._calcFingerVelocity(dominant, dominantIdx);
+
+        // Air-drum strike detection — raw wrist velocity, independent of the
+        // smoothed gesture/velocity signals above (which can't see a strike transient).
+        this._detectStrike(dominant, dominantIdx, now);
+
+        // ── Per-finger signals ──
+        this._extractPerFingerCurl(dominant);
+        this._extractPerFingerExtension(dominant);
+        this._extractDerivedSignals();
 
         // ── Two-hand signals ──
         if (hands.length === 2) {
@@ -293,6 +391,12 @@ class HandPoseDetector {
         for (let i = 0; i < hands.length && i < 2; i++) {
             this._updateHistory(hands[i], i, now);
         }
+
+        // ── Thumbs-up/down feedback gesture ──
+        // Classify AFTER per-finger curls + hand position/proximity are fresh this
+        // frame, then advance the dwell charge (may fire onGesture('thumbConfirm')).
+        this._extractThumbPose(dominant);
+        this._updateThumbCharge(now);
 
         // ── Direct controls (Phase 3) ──
         if (this._directControlEnabled) {
@@ -515,6 +619,72 @@ class HandPoseDetector {
     }
 
     /**
+     * Thumbs-up / thumbs-down classification — geometry only, no extra model.
+     * A clean thumb gesture = thumb extended + the other four fingers curled +
+     * a clear vertical sign of the thumb tip relative to the palm. The hand must
+     * ALSO be centered in frame and close to the camera (a deliberate, near-camera
+     * placement) to count, which gates out incidental thumbs in the periphery.
+     *
+     * Must run AFTER _extractPerFingerCurl + _extractHandPosition/_extractHandProximity
+     * (reads this.state.{index,middle,ring,pinky}Curl, thumbExtension, handPositionX/Y,
+     * handProximity). Sets state.thumbDirection (+1/-1/0), thumbConfidence (0-1),
+     * thumbCentered (bool). Up/down is mirror-invariant (vertical axis only).
+     *
+     * Live tuning: window.__thumbCurlMin (others-curled floor, def 0.55),
+     *   __thumbExtMin (thumb-extended floor, def 0.45), __thumbVsep (min tip↔palm
+     *   vertical separation, def 0.06), __thumbCenterR (max |pos-0.5| per axis,
+     *   def 0.24), __thumbProxMin (min handProximity, def 0.22).
+     */
+    _extractThumbPose(landmarks) {
+        const s = this.state;
+        const thumbTip = landmarks[this.LANDMARKS.THUMB_TIP];
+        const wrist = landmarks[this.LANDMARKS.WRIST];
+        const middleMcp = landmarks[this.LANDMARKS.MIDDLE_MCP];
+        if (!thumbTip || !wrist || !middleMcp) {
+            s.thumbDirection = 0; s.thumbConfidence = 0; s.thumbCentered = false;
+            return;
+        }
+
+        const CURL_MIN = window.__thumbCurlMin ?? 0.55;
+        const EXT_MIN  = window.__thumbExtMin  ?? 0.45;
+        const VSEP_MIN = window.__thumbVsep    ?? 0.06;
+        const CENTER_R = window.__thumbCenterR ?? 0.24;
+        const PROX_MIN = window.__thumbProxMin ?? 0.22;
+
+        // Other four fingers curled (thumb excluded). The WEAKEST finger gates, so a
+        // single uncurled finger disqualifies (an open/spread hand ≠ thumbs gesture).
+        const othersCurl = Math.min(s.indexCurl, s.middleCurl, s.ringCurl, s.pinkyCurl);
+        const thumbExt = s.thumbExtension;
+
+        // Vertical sign: image y increases DOWNWARD, so tip ABOVE the palm ⇒ thumb up.
+        const palmY = (wrist.y + middleMcp.y) / 2;
+        const vsep = palmY - thumbTip.y;            // +ve ⇒ tip above palm ⇒ up
+        let direction = (Math.abs(vsep) >= VSEP_MIN) ? (vsep > 0 ? 1 : -1) : 0;
+
+        // Deliberate placement: centered in frame AND close to the camera.
+        const centered =
+            Math.abs(s.handPositionX - 0.5) < CENTER_R &&
+            Math.abs(s.handPositionY - 0.5) < CENTER_R &&
+            s.handProximity > PROX_MIN;
+
+        // Confidence blends how-extended the thumb is, how-curled the others are, and
+        // how vertically unambiguous the thumb is. Pose must clear all three floors.
+        let conf = 0;
+        if (direction !== 0 && thumbExt >= EXT_MIN && othersCurl >= CURL_MIN) {
+            const extScore  = Math.min(1, (thumbExt - EXT_MIN) / Math.max(1e-3, 1 - EXT_MIN));
+            const curlScore = Math.min(1, (othersCurl - CURL_MIN) / Math.max(1e-3, 1 - CURL_MIN));
+            const sepScore  = Math.min(1, (Math.abs(vsep) - VSEP_MIN) / 0.12);
+            conf = Math.min(1, 0.34 * extScore + 0.40 * curlScore + 0.26 * sepScore);
+        } else {
+            direction = 0;
+        }
+
+        s.thumbDirection = direction;
+        s.thumbConfidence = conf;
+        s.thumbCentered = centered;
+    }
+
+    /**
      * Calculate RMS fingertip velocity for a given hand.
      * Uses position history for smooth velocity estimation.
      */
@@ -539,9 +709,14 @@ class HandPoseDetector {
 
             const dx = tip.x - prev[i].x;
             const dy = tip.y - prev[i].y;
-            sumSq += dx * dx + dy * dy;
+            const distSq = dx * dx + dy * dy;
+            sumSq += distSq;
             count++;
             current.push({ x: tip.x, y: tip.y });
+
+            // Per-finger velocity (0-1, same scale as aggregate)
+            const perVel = Math.min(1, Math.sqrt(distSq) / 0.05);
+            this.state[this._velKeys[i]] = this._smooth(this.state[this._velKeys[i]], perVel);
         }
 
         this._prevFingerPositions[handIdx] = current.length > 0 ? current : prev;
@@ -569,6 +744,119 @@ class HandPoseDetector {
         const normalized = Math.max(0, Math.min(1, dist));
 
         this.state.twoHandDistance = this._smooth(this.state.twoHandDistance, normalized);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // PER-FINGER SIGNALS
+    // ─────────────────────────────────────────────────────────────
+
+    /**
+     * Per-finger curl: ratio of (tip-to-base distance) / (sum of bone lengths).
+     * 0 = fully extended, 1 = fully curled.
+     * Uses all 21 landmarks — unlocks PIP/DIP joints not used elsewhere.
+     */
+    _extractPerFingerCurl(landmarks) {
+        for (let f = 0; f < this._fingerChains.length; f++) {
+            const chain = this._fingerChains[f];
+            const joints = chain.map(idx => landmarks[idx]);
+            if (joints.some(j => !j)) continue;
+
+            // Sum of bone lengths along the chain
+            let boneLength = 0;
+            for (let i = 0; i < joints.length - 1; i++) {
+                const dx = joints[i + 1].x - joints[i].x;
+                const dy = joints[i + 1].y - joints[i].y;
+                boneLength += Math.sqrt(dx * dx + dy * dy);
+            }
+
+            if (boneLength < 0.001) continue;
+
+            // Direct distance from base to tip
+            const base = joints[0];
+            const tip = joints[joints.length - 1];
+            const directDist = Math.sqrt(
+                (tip.x - base.x) ** 2 + (tip.y - base.y) ** 2
+            );
+
+            // curl = 1 when tip is close to base (curled), 0 when extended
+            const curl = 1 - Math.max(0, Math.min(1, directDist / boneLength));
+            this.state[this._curlKeys[f]] = this._smooth(this.state[this._curlKeys[f]], curl);
+        }
+    }
+
+    /**
+     * Per-finger extension: tip distance from palm center, normalized.
+     * Same computation as thumbExtension but for index through pinky.
+     */
+    _extractPerFingerExtension(landmarks) {
+        const wrist = landmarks[this.LANDMARKS.WRIST];
+        const middleMcp = landmarks[this.LANDMARKS.MIDDLE_MCP];
+        if (!wrist || !middleMcp) return;
+
+        const palmX = (wrist.x + middleMcp.x) / 2;
+        const palmY = (wrist.y + middleMcp.y) / 2;
+
+        // Skip thumb (index 0) — already has thumbExtension
+        for (let f = 1; f < this._fingertipIndices.length; f++) {
+            const tip = landmarks[this._fingertipIndices[f]];
+            if (!tip) continue;
+
+            const dx = tip.x - palmX;
+            const dy = tip.y - palmY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const normalized = Math.max(0, Math.min(1, (dist - 0.02) / 0.13));
+
+            const key = this._extKeys[f];
+            if (key) {
+                this.state[key] = this._smooth(this.state[key], normalized);
+            }
+        }
+    }
+
+    /**
+     * Derived inter-finger signals computed from per-finger curls and velocities.
+     */
+    _extractDerivedSignals() {
+        const curls = [
+            this.state.thumbCurl,
+            this.state.indexCurl,
+            this.state.middleCurl,
+            this.state.ringCurl,
+            this.state.pinkyCurl
+        ];
+
+        // fingerWave: how different are sequential finger curls?
+        // High when fingers are at different curl stages (wave/roll), low when sync.
+        const sequentialCurls = curls.slice(1); // index through pinky (sequential neighbors)
+        let maxCurl = -Infinity, minCurl = Infinity;
+        for (const c of sequentialCurls) {
+            if (c > maxCurl) maxCurl = c;
+            if (c < minCurl) minCurl = c;
+        }
+        const wave = Math.max(0, Math.min(1, maxCurl - minCurl));
+        this.state.fingerWave = this._smooth(this.state.fingerWave, wave);
+
+        // curlVariance: statistical variance across all 5 fingers (0-0.25 range → normalize to 0-1)
+        const mean = (curls[0] + curls[1] + curls[2] + curls[3] + curls[4]) / 5;
+        let sumSq = 0;
+        for (const c of curls) sumSq += (c - mean) * (c - mean);
+        const variance = sumSq / 5;
+        // Max variance when one finger is 1 and rest are 0 → 0.16; normalize by 0.2 for headroom
+        this.state.curlVariance = this._smooth(this.state.curlVariance, Math.min(1, variance / 0.2));
+
+        // dominantFinger: which finger has highest velocity? (0=thumb..4=pinky, normalized to 0-1)
+        const vels = [
+            this.state.thumbVelocity,
+            this.state.indexVelocity,
+            this.state.middleVelocity,
+            this.state.ringVelocity,
+            this.state.pinkyVelocity
+        ];
+        let maxIdx = 0;
+        for (let i = 1; i < vels.length; i++) {
+            if (vels[i] > vels[maxIdx]) maxIdx = i;
+        }
+        this.state.dominantFinger = this._smooth(this.state.dominantFinger, maxIdx / 4);
     }
 
     /**
@@ -631,6 +919,17 @@ class HandPoseDetector {
 
         if (s.handCount === 2 && s.twoHandDistance > 0.1) {
             controls.push({ param: 'postScale', value: 0.5 + s.twoHandDistance * 1.5, source: 'hand-two-spread' });
+        }
+
+        // Progressive confirmation cue for the thumbs-up/down gesture: as the dwell
+        // charges, gently lean an existing visual param (up = in, down = out). Routed
+        // through the same protected continuous-control path, so it eases back via the
+        // smoother on release and doesn't writer-fight AE. Param/amount are tunable
+        // (window.__thumbChargeParam default 'postScale', __thumbChargeAmp default 0.12).
+        if (s.thumbCharge > 0.02 && s.thumbDirection !== 0) {
+            const param = window.__thumbChargeParam || 'postScale';
+            const amp = window.__thumbChargeAmp ?? 0.12;
+            controls.push({ param, value: 1.0 + s.thumbDirection * s.thumbCharge * amp, source: 'thumb-charge' });
         }
 
         // Delegate continuous controls to handler
@@ -709,6 +1008,129 @@ class HandPoseDetector {
         }
     }
 
+    /**
+     * Air-drum strike detection. Reads the dominant hand's wrist (landmark 0)
+     * y-position per frame, computes RAW (un-EMA'd) downward velocity, and fires a
+     * discrete 'strike' when a downward stroke peaks then decelerates/reverses
+     * (the hit point at the bottom). Intensity scales with peak velocity. This is
+     * the percussive counterpart to the smoothed continuous gestures, which can't
+     * resolve a <80ms strike transient.
+     *
+     * Only downward motion counts (a wiggle or upward recovery won't fire), and a
+     * cooldown debounces double-hits. Emits: a 'hand-strike' input pulse (engagement)
+     * + an onGesture('strike', {intensity, hand, peakVelocity}) the host maps to a
+     * visual hit. Tuning (live): window.__handStrikeThresh (min peak down-vel/frame,
+     * def 0.018), __handStrikeScale (vel→intensity divisor, def 0.06),
+     * __handStrikeCooldownMs (min inter-strike gap ms, def 110).
+     */
+    _detectStrike(landmarks, handIdx, now) {
+        const wrist = landmarks && landmarks[0];  // MediaPipe Hands: 0 = wrist
+        if (!wrist || typeof wrist.y !== 'number') { this._strikePrevWristY = null; return; }
+
+        const y = wrist.y;  // normalized [0,1], increases DOWNWARD
+        if (this._strikePrevWristY == null) { this._strikePrevWristY = y; return; }
+
+        const vy = y - this._strikePrevWristY;  // +ve = moving down
+        this._strikePrevWristY = y;
+
+        const THRESH = window.__handStrikeThresh ?? 0.018;
+        const SCALE = window.__handStrikeScale ?? 0.06;
+        const COOLDOWN = window.__handStrikeCooldownMs ?? 110;
+
+        if (vy > THRESH) {
+            // Descending fast — track the peak downward velocity.
+            this._strikeDescending = true;
+            if (vy > this._strikePeakVy) this._strikePeakVy = vy;
+        } else if (this._strikeDescending) {
+            // Decelerated/reversed after a qualifying descent → the hit point.
+            const peak = this._strikePeakVy;
+            this._strikeDescending = false;
+            this._strikePeakVy = 0;
+            if (peak >= THRESH && (now - this._lastStrikeTime) >= COOLDOWN) {
+                this._lastStrikeTime = now;
+                const intensity = Math.min(1, peak / SCALE);
+                this.state.lastStrike = { intensity: +intensity.toFixed(3), hand: handIdx, t: now };
+                this.state.strikeCount = (this.state.strikeCount || 0) + 1;
+                // Floor the strike-energy envelope at this hit's intensity (ungated by
+                // confidence). Decayed each frame in _decayStrikeEnergy; consumed by the
+                // engagement/reward loop. Flag: window.__strikeEnergyEnabled (0/false off).
+                if (window.__strikeEnergyEnabled !== false) {
+                    this.state.strikeEnergy = Math.max(this.state.strikeEnergy || 0, intensity);
+                }
+                // minIntervalMs:0 — strikes are already debounced (COOLDOWN ~110ms),
+                // so log every one (the default 1000ms transition throttle would hide
+                // most hits during drumming).
+                this._dep('debugManager')?.logTransition?.('hand', 'strike', { intensity: +intensity.toFixed(2), hand: handIdx, count: this.state.strikeCount }, { minIntervalMs: 0 });
+                // Input-rhythm pulse (same path as keyboard/scroll pulses → engagement).
+                this._dep('pulseCollector')?.recordPulse?.('camera', 'hand-strike', intensity);
+                // Discrete visual hit — host maps this (Psychodeli → SkewEvolution.beatPulse).
+                this._deps.onGesture?.('strike', { intensity, hand: handIdx, peakVelocity: +peak.toFixed(4) });
+            }
+        }
+    }
+
+    /**
+     * Decay the strike-energy envelope toward 0, time-based (frame-rate independent)
+     * so it holds up under steady drumming and falls off ~1-2s after you stop. Runs
+     * every frame (incl. no-hands frames). Tunable: window.__strikeEnergyTau (seconds,
+     * default 1.0 → ~37% per τ).
+     */
+    _decayStrikeEnergy(now) {
+        if (!(this.state.strikeEnergy > 0)) { this._strikeEnergyLastT = now; return; }
+        const last = this._strikeEnergyLastT || now;
+        const dt = Math.max(0, (now - last) / 1000);
+        this._strikeEnergyLastT = now;
+        const tau = Math.max(0.05, window.__strikeEnergyTau ?? 1.0);
+        this.state.strikeEnergy *= Math.exp(-dt / tau);
+        if (this.state.strikeEnergy < 0.01) this.state.strikeEnergy = 0;
+    }
+
+    /**
+     * Advance the thumbs-up/down dwell charge. A valid pose (direction set, centered,
+     * confidence ≥ __thumbConfMin, hand confidently tracked) builds thumbCharge 0→1
+     * over ~__thumbChargeSec seconds; anything else decays it (τ = __thumbChargeTau).
+     * At full charge it fires onGesture('thumbConfirm', {direction}) ONCE and latches
+     * — the user must release the pose (active→false) before another confirm arms,
+     * so a sustained hold records exactly one reaction. Time-based (uses dt), so the
+     * 3.3Hz overlay rate and 20fps dedicated rate behave the same.
+     *
+     * Live tuning: window.__thumbGestureEnabled (false disables), __thumbChargeSec
+     *   (build seconds to confirm, def 1.2), __thumbChargeTau (release decay seconds,
+     *   def 0.4), __thumbConfMin (min thumbConfidence to build, def 0.6).
+     */
+    _updateThumbCharge(now) {
+        const s = this.state;
+        const last = this._thumbChargeLastT || now;
+        const dt = Math.max(0, Math.min(0.25, (now - last) / 1000)); // clamp long gaps/tab-blur
+        this._thumbChargeLastT = now;
+
+        if (window.__thumbGestureEnabled === false) { s.thumbCharge = 0; this._thumbLatched = false; return; }
+
+        const CONF_MIN = window.__thumbConfMin ?? 0.6;
+        const active = s.thumbDirection !== 0 && s.thumbCentered &&
+                       s.thumbConfidence >= CONF_MIN && s.confidence > 0.3;
+
+        if (active && !this._thumbLatched) {
+            const sec = Math.max(0.2, window.__thumbChargeSec ?? 1.2);
+            s.thumbCharge = Math.min(1, (s.thumbCharge || 0) + dt / sec);
+
+            if (s.thumbCharge >= 1 && (now - this._lastThumbConfirmTime) >= this._thumbConfirmCooldownMs) {
+                this._lastThumbConfirmTime = now;
+                this._thumbLatched = true;          // require a release before next confirm
+                const direction = s.thumbDirection;
+                s.thumbCharge = 0;                  // drop the visual lean at the moment of commit
+                this._dep('debugManager')?.logTransition?.('hand', 'thumb-confirm',
+                    { direction, confidence: +s.thumbConfidence.toFixed(2) }, { minIntervalMs: 0 });
+                this._deps.onGesture?.('thumbConfirm', { direction, confidence: s.thumbConfidence });
+            }
+        } else {
+            const tau = Math.max(0.05, window.__thumbChargeTau ?? 0.4);
+            s.thumbCharge = (s.thumbCharge || 0) * Math.exp(-dt / tau);
+            if (s.thumbCharge < 0.01) s.thumbCharge = 0;
+            if (!active) this._thumbLatched = false; // pose released → re-arm
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────
     // UTILITIES
     // ─────────────────────────────────────────────────────────────
@@ -737,11 +1159,37 @@ class HandPoseDetector {
         this.state.handPositionX = 0.5;
         this.state.handPositionY = 0.5;
         this.state.thumbExtension = 0;
+        this.state.thumbDirection = 0;
+        this.state.thumbConfidence = 0;
+        this.state.thumbCentered = false;
+        this.state.thumbCharge = 0;
+        this._thumbLatched = false;
         this.state.twoHandDistance = 0;
         this.state.handCount = 0;
         this.state.pinchDelta = 0;
         this.state.spreadDelta = 0;
         this.state.confidence = 0;
+
+        // Per-finger signals
+        this.state.thumbCurl = 0;
+        this.state.indexCurl = 0;
+        this.state.middleCurl = 0;
+        this.state.ringCurl = 0;
+        this.state.pinkyCurl = 0;
+        this.state.thumbVelocity = 0;
+        this.state.indexVelocity = 0;
+        this.state.middleVelocity = 0;
+        this.state.ringVelocity = 0;
+        this.state.pinkyVelocity = 0;
+        this.state.indexExtension = 0;
+        this.state.middleExtension = 0;
+        this.state.ringExtension = 0;
+        this.state.pinkyExtension = 0;
+        this.state.fingerWave = 0;
+        this.state.curlVariance = 0;
+        this.state.dominantFinger = 0;
+        this.state.landmarks = null;
+        this.state.landmarks2 = null;
     }
 
     /**

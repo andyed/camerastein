@@ -60,6 +60,7 @@ class HeadBobDetector {
 
         // Position history for oscillation detection (per face)
         this.faceStates = [];         // Array of per-face tracking state
+        this._nextFaceId = 1;         // Monotonic id so consumers (HeadExtrude slots) track a person across frames
         this.maxFaces = 4;
         this.historyMaxLength = 60;   // ~2 seconds at 30fps
         this.faceTimeout = 3000;      // Remove face tracking if not seen for 3s (was 1s — too aggressive for multi-face occlusion)
@@ -85,6 +86,7 @@ class HeadBobDetector {
             isEngaged: false,
             faceCount: 0,             // Number of faces currently tracked
             syncedFaces: 0,           // Number of faces synced to beat
+            crowdEnergy: 0,           // 0-1 collective sync: a room moving together drives the show harder
 
             // Lean detection (proximity)
             faceSize: 0,              // Normalized face size (0-1)
@@ -125,6 +127,7 @@ class HeadBobDetector {
         this._smileHistory = [];          // Recent valence samples for sustained detection
         this._smileHistoryMax = 20;       // ~0.7s at 30fps
         this._lastSmileFeedback = 0;      // Debounce timestamp
+        this._valenceBaseline = null;     // Personal resting-face valence (warm-started, slow drift)
 
         // Face presence tracking (entrance/exit events for AE, like instrument changes)
         this.facePresence = {
@@ -186,55 +189,49 @@ class HeadBobDetector {
     }
 
     /**
-     * Start head bob detection
-     * Uses SharedCameraManager for instant switching with body tracking.
+     * Request head tracking via the camera machine. DEPRECATED as a lifecycle
+     * authority — detectors are pure consumers now; SharedCameraManager calls
+     * _activate/_deactivate when ownership actually changes. Kept for
+     * permalink autostart and external callers; throws on failure so their
+     * retry paths (e.g. the headbob= one-shot auto-retry) keep working.
      */
     async start() {
-        if (this.active) return;
-
-        this._dep('debugManager')?.info?.('🎥 Starting Head Bob Detector...');
-
-        try {
-            if (this._dep('mediaPipeLoader')) {
-                this._dep('mediaPipeLoader').setOptions({ refineLandmarks: true });
-            }
-
-            // Use shared camera - this loads both models on first call
-            await this._dep('cameraManager').startMode('head', this._onResults);
-
-            this.active = true;
-            this.enabled = true;
-
-            this._dep('debugManager')?.info?.('✅ Head Bob Detector active');
-            this._showIndicator(true);
-
-        } catch (error) {
-            this._dep('debugManager')?.warn?.('Failed to start Head Bob Detector:', error?.message || String(error));
-            this.stop();
-            throw error;
-        }
+        const r = await this._dep('cameraManager')?.setModeDesired?.('head', true);
+        if (!r?.ok) throw new Error('Head tracking failed to start');
     }
 
     /**
-     * Stop head bob detection
-     * Models stay loaded for instant switching to body mode.
-     * @param {boolean} fullShutdown - If true, also stops SharedCameraManager
+     * Release head tracking via the camera machine.
+     * @param {boolean} fullShutdown - also unload models + stop the manager
      */
     stop(fullShutdown = false) {
+        this._dep('cameraManager')?.setModeDesired?.('head', false);
+        if (fullShutdown) this._dep('cameraManager')?.shutdown?.();
+    }
+
+    /**
+     * Machine hook: head became the live primary. Pure consumer setup only —
+     * no camera/stream authority in here.
+     */
+    _activate() {
+        if (this.active) return;
+        if (this._dep('mediaPipeLoader')) {
+            this._dep('mediaPipeLoader').setOptions({ refineLandmarks: true });
+        }
+        this.active = true;
+        this.enabled = true;
+        this._dep('debugManager')?.info?.('✅ Head Bob Detector active');
+        this._showIndicator(true);
+    }
+
+    /**
+     * Machine hook: head detached. Clears all rolling state and nulls the
+     * rhythm channel — payload contract: null means null, no zombie payloads.
+     */
+    _deactivate() {
         if (!this.active) return;
-
-        this._dep('debugManager')?.info?.('🛑 Stopping Head Bob Detector');
-
         this.active = false;
         this.enabled = false;
-
-        if (this._dep('cameraManager')?.activeMode === 'head') {
-            if (fullShutdown) {
-                this._dep('cameraManager').shutdown();
-            } else {
-                this._dep('cameraManager').stopMode();
-            }
-        }
 
         // Clear history
         this.faceStates = [];
@@ -245,6 +242,7 @@ class HeadBobDetector {
         this.mouthHistory = [];
         this._smileHistory = [];
         this._smileValence = 0;
+        this._valenceBaseline = null;
         this._mouthActivityWindow = [];
         this.state.mouthAspectRatio = 0;
         this.state.mouthOpenness = 0;
@@ -360,10 +358,32 @@ class HeadBobDetector {
                 faceState.yHistory.shift();
             }
 
+            // Per-face silhouette (16 feature pts) for the multi-face emboss —
+            // HeadExtrude derives THIS face's expression/geometry from it, keyed by
+            // faceState.id so each person's relief tracks across frames. faceIdx 0
+            // also feeds the legacy single-face field for backward compatibility.
+            const sil = this._extractSilhouette(landmarks);
+            faceState.silhouette = sil;
+            faceState.faceSize = thisFaceSize;
+            if (faceIdx === 0) this.state.faceLandmarks = sil;
+
+            // Per-face head velocity (image units/sec) → HeadExtrude's activity gate
+            const yh = faceState.yHistory;
+            if (yh.length >= 2) {
+                const a = yh[yh.length - 2], b = yh[yh.length - 1];
+                const dtv = (b.t - a.t) / 1000;
+                const vy = dtv > 0 ? (b.y - a.y) / dtv : 0;
+                faceState.headVel = (faceState.headVel || 0) * 0.65 + vy * 0.35;
+            }
+
             // Detect bob pattern for this face
             const bobState = this._detectBobForFace(faceState);
             if (bobState) {
                 faceState.bobState = bobState;
+                // Per-face intensity (confidence × normalized amplitude) → emboss melt/presence
+                faceState.intensity = bobState.confidence > 0.3
+                    ? bobState.confidence * Math.min(1, bobState.bobAmplitude / 0.03)
+                    : (faceState.intensity || 0) * 0.95;
                 const syncScore = this._calculateBeatSync(bobState);
                 faceState.beatSyncScore = syncScore;
 
@@ -387,6 +407,16 @@ class HeadBobDetector {
         // Update aggregate state
         this.state.faceCount = this.faceStates.length;
         this.state.syncedFaces = syncedCount;
+
+        // Crowd energy — a room moving together drives the show harder. 0 with ≤1
+        // synced face, ramps to 1 at 4 synced. Smoothed so it eases in/out. Behind
+        // __crowdEnergy (default on web/dev). Consumed in the broadcast (intensity lift).
+        const rawCrowd = (window.__crowdEnergy ?? true)
+            ? Math.max(0, Math.min(1, (syncedCount - 1) / 3))
+            : 0;
+        this._crowdEnergySm = (this._crowdEnergySm ?? 0);
+        this._crowdEnergySm += (rawCrowd - this._crowdEnergySm) * 0.1;
+        this.state.crowdEnergy = this._crowdEnergySm;
 
         // Emit face entrance/exit events to AE (like instrument changes)
         this._trackFacePresence(now);
@@ -425,8 +455,9 @@ class HeadBobDetector {
             this._emitPulse(now);
         }
 
-        // Broadcast rhythm sync for visual system
-        this._broadcastRhythmSync();
+        // Broadcast rhythm sync for visual system (pass this frame's timestamp so the
+        // emboss render list can gate on freshness, not the 3s identity timeout).
+        this._broadcastRhythmSync(now);
 
         // Fire granular motion pulses for syntax system (velocity spikes, orientation peaks)
         this._emitMotionPulses(now);
@@ -528,12 +559,59 @@ class HeadBobDetector {
     }
 
     /**
-     * Broadcast rhythm sync values for visual system consumption
+     * Extract the 16 FEATURE landmarks for one face's expressive smiley (HeadExtrude
+     * derives center / axes / roll / per-eye openness / mouth-curve from these). Slots:
+     *   0 top(10)  1 chin(152)  2 left(234)  3 right(454)
+     *   4-7  left eye:  outer(33)  inner(133)  upperLid(159)  lowerLid(145)
+     *   8-11 right eye: outer(263) inner(362)  upperLid(386)  lowerLid(374)
+     *   12-15 mouth: leftCorner(61) rightCorner(291) upperLip(13) lowerLip(14)
+     * Returns raw (normalized image coords) or null if any point is missing/NaN;
+     * HeadExtrude mirrors/maps to pixels.
      */
-    _broadcastRhythmSync() {
+    _extractSilhouette(landmarks) {
+        const FEATURES = [10, 152, 234, 454, 33, 133, 159, 145, 263, 362, 386, 374, 61, 291, 13, 14];
+        const out = [];
+        for (let i = 0; i < FEATURES.length; i++) {
+            const p = landmarks[FEATURES[i]];
+            if (!p || !isFinite(p.x) || !isFinite(p.y)) return null;
+            out.push({ x: p.x, y: p.y, z: p.z || 0 });
+        }
+        return out;
+    }
+
+    _broadcastRhythmSync(frameNow = performance.now()) {
+        // Per-face payload for the multi-face emboss — one entry per CURRENTLY-VISIBLE
+        // person, largest (closest) first so faces[0] is the primary. Gate on FRESHNESS,
+        // NOT the 3s identity timeout (faceTimeout): a faceState lingers up to faceTimeout
+        // so a briefly occluded face keeps its bob HISTORY, but a stale silhouette must not
+        // keep stamping a phantom relief once the face is gone — otherwise a transient false
+        // detection (reflection, a hand, the head re-acquired at a new spot) ghosts on screen
+        // for seconds. Only faces matched within __multiFaceFreshMs of this frame render.
+        const freshMs = (window.__multiFaceFreshMs ?? 150);
+        const faces = [];
+        for (const fs of this.faceStates) {
+            if (fs.silhouette && (frameNow - fs.lastSeen) < freshMs) {
+                faces.push({
+                    id: fs.id,
+                    faceLandmarks: fs.silhouette,
+                    intensity: fs.intensity || 0,
+                    headVelocity: fs.headVel || 0,
+                    size: fs.faceSize || 0
+                });
+            }
+        }
+        faces.sort((a, b) => b.size - a.size);
+
+        // Collective lift: a synced room pushes the shared visual intensity toward full
+        // (clamped to the 0-1 contract existing consumers assume). Per-face emboss reads
+        // its own intensity from faces[], so this only lifts the rest of the show.
+        const crowd = this.state.crowdEnergy || 0;
+        const crowdGain = (window.__crowdEnergyGain ?? 0.5);
+        const liftedIntensity = Math.min(1, this.state.userRhythmIntensity * (1 + crowdGain * crowd));
+
         const payload = {
             phase: this.state.userRhythmPhase,
-            intensity: this.state.userRhythmIntensity,
+            intensity: liftedIntensity,
             frequency: this.state.bobFrequency,
             smoothedY: this.state.smoothedBobY,
             headY: this.state.headY,
@@ -548,7 +626,12 @@ class HeadBobDetector {
             headRollVelocity: this.state.headRollVelocity,
             leanAmount: this.state.leanAmount,
             isEngaged: this.state.isEngaged,
-            timestamp: performance.now()
+            faceLandmarks: this.state.faceLandmarks || null,
+            faces: faces,
+            faceCount: this.state.faceCount,
+            syncedFaces: this.state.syncedFaces,
+            crowdEnergy: crowd,
+            timestamp: frameNow
         };
 
         // Publish via MotionBus
@@ -699,12 +782,17 @@ class HeadBobDetector {
 
         // Create new face state
         const newFace = {
+            id: this._nextFaceId++,   // stable identity so HeadExtrude tracks this person across frames
             headX,
             headY,
             yHistory: [],
             lastSeen: now,
             bobState: null,
-            beatSyncScore: 0
+            beatSyncScore: 0,
+            silhouette: null,
+            intensity: 0,
+            headVel: 0,
+            faceSize: 0
         };
         this.faceStates.push(newFace);
         return newFace;
@@ -913,7 +1001,18 @@ class HeadBobDetector {
 
         const beatFrequency = musicBPM / 60; // Hz
 
-        // Check if bob frequency matches beat (or half/double)
+        // Match the bob frequency against the beat and its half/double subdivisions
+        // via the shared matcher (single source of truth — js/lib/beat-subdivision.js).
+        // relativeTo:'matched' reproduces this detector's original convention exactly
+        // (deviation measured against k×beatFreq, not against the bob frequency).
+        if (window.BeatSubdivision) {
+            return window.BeatSubdivision.syncScore(
+                bobState.bobFrequency, beatFrequency, 0.2, { relativeTo: 'matched' }
+            );
+        }
+
+        // Fallback: original inline [0.5, 1, 2] loop (20% tolerance), kept so the
+        // detector still works standalone when BeatSubdivision isn't loaded (Camerastein).
         const subdivisions = [0.5, 1.0, 2.0];
         let bestSync = 0;
 

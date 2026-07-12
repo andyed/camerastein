@@ -53,10 +53,17 @@ HeadBobDetector.prototype._updateMouthState = function(landmarks, now) {
         const sustainedOpen = openness > 0.3 && activity < 0.5;
         const rapidFluctuation = activity > 0.6;
 
-        // Check if vocal detector agrees (if available)
-        const vocalDetector = window.vocalDetector;
-        const vocalActive = vocalDetector?.getState?.()?.isActive || false;
-        const vocalStyle = vocalDetector?.getState?.()?.vocalStyle;
+        // Check if the voice signal agrees (if available). Read through the
+        // unifying voiceChannels contract (VOICE_DECOMPOSITION_SPEC) rather
+        // than vocalDetector directly; fall back to the detector if the
+        // contract hasn't loaded yet (libs load async post-audio-permission).
+        const vch = window.voiceChannels?.get?.() || null;
+        const vocalActive = vch
+            ? !!vch.presence.detail.instantaneous
+            : (window.vocalDetector?.getState?.()?.isActive || false);
+        const vocalStyle = vch
+            ? vch.kind.detail.vocalStyle
+            : window.vocalDetector?.getState?.()?.vocalStyle;
 
         // Update state
         this.state.mouthAspectRatio = MAR;
@@ -132,29 +139,48 @@ HeadBobDetector.prototype._updateSmileValence = function(landmarks, now) {
     // Update state for broadcast
     this.state.smileValence = this._smileValence;
 
-    // Dispatch feedback if expression is sustained and clear
-    // Requires: all recent samples agree on direction, minimum magnitude
+    // Dispatch feedback if expression is sustained, clear, AND deviates from
+    // the user's own resting face. The corner-vs-midline geometry reads many
+    // neutral faces as slightly frowny, so absolute thresholds turned "resting
+    // concentration face" into a stream of negative AE feedback (candidate
+    // emitter for the 18 blink_feedback:left events in the 2026-06-12 dance
+    // dump). Baseline = personal neutral, warm-started from the first settled
+    // window, then drifting very slowly (~25s τ at 20fps) so a held expression
+    // self-limits instead of re-firing every debounce window.
     if (this._smileHistory.length >= 12) {
         const SMILE_THRESHOLD = 0.35;
         const FROWN_THRESHOLD = -0.3;
         const DEBOUNCE_MS = 3000; // One feedback per 3s (matches wink debounce spirit)
 
+        const recent = this._smileHistory.slice(-12);
+        if (this._valenceBaseline == null) {
+            // Warm-start: the first settled window defines "neutral" for this
+            // face. A user already expressing at calibration loses that first
+            // gesture — acceptable; false negatives are cheaper than the
+            // false-positive demotion storms this replaces.
+            this._valenceBaseline = recent.reduce((a, b) => a + b, 0) / recent.length;
+            return;
+        }
+        this._valenceBaseline = Math.max(-0.5, Math.min(0.5,
+            this._valenceBaseline * 0.998 + this._smileValence * 0.002));
+
         if (now - this._lastSmileFeedback < DEBOUNCE_MS) return;
 
-        const allSmiling = this._smileHistory.slice(-12).every(v => v > SMILE_THRESHOLD);
-        const allFrowning = this._smileHistory.slice(-12).every(v => v < FROWN_THRESHOLD);
+        const base = this._valenceBaseline;
+        const allSmiling = recent.every(v => (v - base) > SMILE_THRESHOLD);
+        const allFrowning = recent.every(v => (v - base) < FROWN_THRESHOLD);
 
         if (allSmiling) {
             this._lastSmileFeedback = now;
-            console.log(`😊 Smile feedback: valence ${this._smileValence.toFixed(2)}`);
+            window.debugManager?.info?.(`😊 Smile feedback: valence ${this._smileValence.toFixed(2)} (baseline ${base.toFixed(2)})`);
             if (window.AlgorithmicExploration?.handleBlinkFeedback) {
-                window.AlgorithmicExploration.handleBlinkFeedback('right'); // positive, like right wink
+                window.AlgorithmicExploration.handleBlinkFeedback('right', 'smile'); // positive, like right wink
             }
         } else if (allFrowning) {
             this._lastSmileFeedback = now;
-            console.log(`😟 Frown feedback: valence ${this._smileValence.toFixed(2)}`);
+            window.debugManager?.info?.(`😟 Frown feedback: valence ${this._smileValence.toFixed(2)} (baseline ${base.toFixed(2)})`);
             if (window.AlgorithmicExploration?.handleBlinkFeedback) {
-                window.AlgorithmicExploration.handleBlinkFeedback('left'); // negative, like left wink
+                window.AlgorithmicExploration.handleBlinkFeedback('left', 'frown'); // negative, like left wink
             }
         }
     }
@@ -172,6 +198,7 @@ HeadBobDetector.prototype._broadcastMouthSync = function() {
         isSinging: this.state.isSinging,
         isSpeaking: this.state.isSpeaking,
         smileValence: this.state.smileValence || 0,
+        valenceBaseline: this._valenceBaseline || 0,   // personal resting valence — lets visual consumers stay neutral at rest (selective expression)
         timestamp: performance.now()
     };
 

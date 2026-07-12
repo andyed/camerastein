@@ -19,13 +19,20 @@
      * Build a human-readable status string from current permissions.
      */
     function getStatusMessage(perms) {
+        const mgr = window.SharedCameraManager;
+        const handDedicated = mgr?._handPrimaryMode && perms.hand;
+
+        if (handDedicated && !perms.head && !perms.body) {
+            return 'Hand (dedicated)';
+        }
+
         let primary = '';
         if (perms.head && perms.body) primary = 'Auto-Switch';
         else if (perms.head) primary = 'Head';
         else if (perms.body) primary = 'Body';
         else primary = 'Off';
 
-        const handLabel = perms.hand ? ' + Hand' : '';
+        const handLabel = perms.hand ? (handDedicated ? ' + Hand (dedicated)' : ' + Hand') : '';
         return primary + handLabel;
     }
 
@@ -100,7 +107,7 @@
             if (!CAMERA_KEYS.has(key)) return;
 
             e.preventDefault();
-            const result = await handleCameraKey(e.key);
+            const result = await handleCameraKey(key);
             if (result && options.onToggle) {
                 options.onToggle(result);
             }
