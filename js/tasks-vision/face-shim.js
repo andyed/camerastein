@@ -45,6 +45,17 @@ export class FaceLandmarkerShim {
                     t: ts
                 });
             }
+
+            // Emit raw 478 face landmarks (includes iris at 468-477) so consumers
+            // can crop eye regions, draw landmark overlays, and run their own
+            // per-frame geometry. Subscribers: oculens (eye crops + vergence).
+            if (result.faceLandmarks?.length > 0) {
+                window.MotionBus?.emit('faceLandmarks', {
+                    landmarks: result.faceLandmarks[0],
+                    allFaces: result.faceLandmarks,
+                    t: ts
+                });
+            }
         } catch (e) {
             // Silently skip frame on error (matches legacy behavior)
             window.debugManager?.warn?.('FaceLandmarkerShim.send error:', e.message);

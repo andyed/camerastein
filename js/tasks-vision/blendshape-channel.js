@@ -29,6 +29,10 @@ export function initBlendshapeChannel() {
     // Extend state and channel map at runtime (non-destructive)
     bus.state.blendshapes = null;
     bus._channels.faceBlendshapes = 'blendshapes';
+
+    // Also register the raw face-landmarks channel (emitted by face-shim.js)
+    bus.state.landmarks = null;
+    bus._channels.faceLandmarks = 'landmarks';
 }
 
 /**
