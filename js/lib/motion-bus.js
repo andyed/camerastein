@@ -49,8 +49,22 @@ class MotionBus {
      * @param {Object|null} payload - Detection state object, or null when inactive
      */
     emit(eventName, payload) {
-        // Auto-update internal state
+        // Payload liveness contract (camera refactor 2026-06-11): every
+        // non-null channel payload carries a timestamp, so consumers can
+        // tell live data from zombies — the 9152e5dc hand bug was a
+        // timestamp-less {handCount:0} payload read as eternally live.
+        // null still means inactive: detectors emit(channel, null) on detach.
         const stateKey = this._channels[eventName];
+        if (payload && typeof payload === 'object') {
+            if (typeof payload.t !== 'number') {
+                payload.t = (typeof payload.timestamp === 'number')
+                    ? payload.timestamp
+                    : performance.now();
+            }
+            if (typeof payload.timestamp !== 'number') payload.timestamp = payload.t;
+        }
+
+        // Auto-update internal state
         if (stateKey) {
             this.state[stateKey] = payload;
         }
@@ -65,6 +79,20 @@ class MotionBus {
      */
     getState() {
         return this.state;
+    }
+
+    /**
+     * Liveness check: channel state is non-null AND fresh. Use this instead
+     * of truthiness when stale data would misbehave (gain freezes, ladders).
+     * @param {string} key - state key ('rhythm'|'body'|'hand') or channel name
+     * @param {number} [maxAgeMs=1500] - staleness bound
+     * @returns {boolean}
+     */
+    isLive(key, maxAgeMs = 1500) {
+        const stateKey = this._channels[key] || key;
+        const p = this.state[stateKey];
+        if (!p || typeof p !== 'object' || typeof p.t !== 'number') return false;
+        return (performance.now() - p.t) <= maxAgeMs;
     }
 }
 
