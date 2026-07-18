@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "camerastein",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["http-server", "-c-1"],
+      "port": 8081,
+      "autoPort": true
+    }
+  ]
+}
