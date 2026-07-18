@@ -39,6 +39,8 @@ The camera runs a single video stream. SharedCameraManager enforces a two-tier s
 
 **Overlay slot (concurrent):** Hands run alongside whichever primary is active, but throttled — processing every 6th frame on desktop (~3 Hz at 20 FPS base) and every 12th on mobile. This prevents the hand model from starving the primary detector of GPU/CPU time.
 
+This is the current implementation boundary: automation switches **Head ↔ Body**. Hands are manually enabled as either the throttled overlay or the dedicated detector; hand activity does not yet participate in automatic switching.
+
 ```
 Frame loop:  [Head] [Head] [Head] [Head] [Head] [Hand+Head] [Head] [Head] ...
                                                   ↑
@@ -46,6 +48,15 @@ Frame loop:  [Head] [Head] [Head] [Head] [Head] [Hand+Head] [Head] [Head] ...
 ```
 
 Both MediaPipe models stay loaded in memory (~7 MB total) for instant switching. The latency on mode switch is the frame processing time, not a model reload.
+
+### Direction: attention-aware mobile scheduling
+
+Camerastein is the portability boundary for more ambitious camera resource policy. The next scheduler should separate two decisions:
+
+1. An **attention arbiter** promotes face, hand, or body from low-rate scouting to foreground quality based on presence and meaningful activity. The first target is face↔hand: face at roughly 10–12 Hz with hands scouting near 2 Hz, then hands at 8–12 Hz while an active gesture is sustained and face drops to a watchdog rate.
+2. A **deadline scheduler** budgets work using measured inference cost per model, device class, render FPS, visibility, and constrained/thermal state. Fixed frame skips remain safe defaults, not the final policy.
+
+Promotion needs dwell and hysteresis (`FACE_FOREGROUND → HAND_CANDIDATE → HAND_FOREGROUND`), a cooldown, and a user override. Model residency should be independently configurable: keep models warm when memory permits, unload inactive models on constrained devices. Exported benchmarks should include scheduler state, transitions, inference cost, and missed deadlines so Psychodeli and native iOS can adopt a policy already tested here.
 
 ## Architecture
 
@@ -97,6 +108,14 @@ window.MotionBus.subscribe('handPose', (data) => {
     // data.pinchStrength, data.fistClosure, data.fingerSpread, ...
 });
 
+// Subscribe to provider-neutral face geometry. Tasks Vision currently emits
+// 478 normalized landmarks (including irises) and canonical connection tables.
+window.MotionBus.subscribe('faceLandmarks', (frame) => {
+    if (!frame) return; // null means no face is currently detected
+    const { landmarks, allFaces, topology, imageSize, source, t } = frame;
+    // topology.tessellation, topology.contours, topology.lips, ...
+});
+
 // Poll current state
 const rhythm = window.MotionBus.state.rhythm; // null when inactive
 const body = window.MotionBus.state.body;
@@ -113,6 +132,8 @@ To add a new detector (e.g., gaze tracking):
 4. Subscribe in your UI: `window.MotionBus.subscribe('gazeTracking', handler)`
 
 The MotionBus doesn't care what you emit — any channel name works.
+
+Run `npm test` for the focused portable face-mesh contract and renderer checks.
 
 ## Benchmarking
 

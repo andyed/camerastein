@@ -58,12 +58,19 @@ export class SkeletonRenderer {
 
         // Latest results per channel — null means "nothing received yet"
         this.faceResults = null;
+        this.faceMeshFrame = null;
         this.bodyResults = null;
         this.handResults = null;
+        this._fallbackMeshEdges = null;
+        this._fallbackMeshPointCount = 0;
     }
 
     updateFace(results) {
         this.faceResults = results;
+    }
+
+    updateFaceMesh(frame) {
+        this.faceMeshFrame = frame;
     }
 
     updateBody(results) {
@@ -105,6 +112,69 @@ export class SkeletonRenderer {
         ctx.fill();
     }
 
+    _edgePair(edge) {
+        if (Array.isArray(edge)) {
+            return Number.isInteger(edge[0]) && Number.isInteger(edge[1])
+                ? [edge[0], edge[1]]
+                : null;
+        }
+        if (!edge || typeof edge !== 'object') return null;
+        const a = edge.start ?? edge.startIndex ?? edge[0];
+        const b = edge.end ?? edge.endIndex ?? edge[1];
+        return Number.isInteger(a) && Number.isInteger(b) ? [a, b] : null;
+    }
+
+    _drawConnections(ctx, pts, connections, width, alpha) {
+        if (!Array.isArray(connections) || !connections.length) return;
+        ctx.beginPath();
+        for (const edge of connections) {
+            const pair = this._edgePair(edge);
+            if (!pair || !pts[pair[0]] || !pts[pair[1]]) continue;
+            ctx.moveTo(pts[pair[0]].x, pts[pair[0]].y);
+            ctx.lineTo(pts[pair[1]].x, pts[pair[1]].y);
+        }
+        ctx.strokeStyle = FACE_COLOR;
+        ctx.lineWidth = width;
+        ctx.globalAlpha = alpha;
+        ctx.stroke();
+    }
+
+    /**
+     * Legacy FaceMesh provides all 468 points but not the Tasks Vision connection
+     * tables. Build a stable local neighbourhood graph once from the first frame
+     * instead of falling back to the old five-contour avatar.
+     */
+    _denseConnections(landmarks) {
+        const pointCount = Math.min(468, landmarks?.length || 0);
+        if (this._fallbackMeshEdges && this._fallbackMeshPointCount === pointCount) {
+            return this._fallbackMeshEdges;
+        }
+        const edges = [];
+        const seen = new Set();
+        for (let i = 0; i < pointCount; i++) {
+            const a = landmarks[i];
+            if (!a || !Number.isFinite(a.x) || !Number.isFinite(a.y)) continue;
+            const nearest = [];
+            for (let j = 0; j < pointCount; j++) {
+                if (i === j) continue;
+                const b = landmarks[j];
+                if (!b || !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
+                const dx = a.x - b.x, dy = a.y - b.y;
+                nearest.push({ j, d2: dx * dx + dy * dy });
+            }
+            nearest.sort((u, v) => u.d2 - v.d2);
+            for (let k = 0; k < Math.min(4, nearest.length); k++) {
+                const j = nearest[k].j;
+                const lo = Math.min(i, j), hi = Math.max(i, j);
+                const key = `${lo}:${hi}`;
+                if (!seen.has(key)) { seen.add(key); edges.push([lo, hi]); }
+            }
+        }
+        this._fallbackMeshPointCount = pointCount;
+        this._fallbackMeshEdges = edges;
+        return edges;
+    }
+
     // --- Channel renderers ---
 
     _drawBody() {
@@ -138,6 +208,38 @@ export class SkeletonRenderer {
     }
 
     _drawFace() {
+        // Prefer Camerastein's portable full-mesh representation when available.
+        // This makes the investment visible: canonical 478-point tessellation rather
+        // than the five contour polylines retained below as a legacy fallback.
+        const legacyFaces = this.faceResults?.multiFaceLandmarks;
+        const meshLandmarks = this.faceMeshFrame?.landmarks ?? legacyFaces?.[0];
+        const topology = this.faceMeshFrame?.topology;
+        if (Array.isArray(meshLandmarks) && meshLandmarks.length >= 468) {
+            const ctx = this.ctx;
+            const pts = meshLandmarks.map(lm => this._toPixel(lm));
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+
+            // Accept the old misspelled key for any early prototype consumers,
+            // while emitting `tessellation` as the portable contract.
+            this._drawConnections(
+                ctx,
+                pts,
+                topology?.tessellation ?? topology?.tesselation ?? this._denseConnections(meshLandmarks),
+                0.55,
+                0.28
+            );
+            this._drawConnections(ctx, pts, topology?.contours, 1.35, 0.88);
+
+            // Tiny vertices make the sampling density unmistakable without turning
+            // the face into an opaque mask.
+            ctx.fillStyle = FACE_COLOR;
+            ctx.globalAlpha = 0.48;
+            for (const p of pts) this._circle(ctx, p, 0.7);
+            ctx.globalAlpha = 1;
+            return;
+        }
+
         const faces = this.faceResults?.multiFaceLandmarks;
         if (!faces || faces.length === 0) return;
         const landmarks = faces[0];

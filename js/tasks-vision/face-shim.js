@@ -12,8 +12,12 @@
 import { translateFaceResults } from './result-translators.js';
 
 export class FaceLandmarkerShim {
-    constructor(landmarker) {
+    constructor(landmarker, topology = null) {
         this._landmarker = landmarker;
+        // Stable MediaPipe connection tables. Keep them beside the raw landmark
+        // frame so sister projects can render the same portable geometry without
+        // importing or duplicating a version-specific topology table.
+        this._topology = topology;
         this._callback = null;
         this._lastTimestamp = 0;
     }
@@ -53,8 +57,18 @@ export class FaceLandmarkerShim {
                 window.MotionBus?.emit('faceLandmarks', {
                     landmarks: result.faceLandmarks[0],
                     allFaces: result.faceLandmarks,
+                    topology: this._topology,
+                    source: 'mediapipe-tasks',
+                    imageSize: {
+                        width: Number(image.videoWidth || image.width) || 0,
+                        height: Number(image.videoHeight || image.height) || 0,
+                    },
                     t: ts
                 });
+            } else {
+                // Explicitly clear the channel. Without this, consumers retain
+                // and render the final detected mesh after the face leaves view.
+                window.MotionBus?.emit('faceLandmarks', null);
             }
         } catch (e) {
             // Silently skip frame on error (matches legacy behavior)

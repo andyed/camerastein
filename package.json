@@ -3,9 +3,11 @@
   "version": "0.1.0",
   "description": "Camera body signal detection platform — head, body, hands via MediaPipe",
   "private": true,
+  "type": "module",
   "scripts": {
     "start": "npx http-server -p 8081 -c-1",
-    "dev": "npx http-server -p 8081 -c-1 -o"
+    "dev": "npx http-server -p 8081 -c-1 -o",
+    "test": "node --test tests/*.test.js"
   },
   "keywords": ["mediapipe", "motion-detection", "body-tracking", "hand-tracking", "face-tracking"],
   "author": "Andy Edmonds",

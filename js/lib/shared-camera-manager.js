@@ -61,9 +61,11 @@ class SharedCameraManager {
         this._handOverlayCallback = null;
         this._handFrameCounter = 0;
         this._handSuspended = false; // set on hand frame errors until the machine detaches hands
-        // Process hands every Nth frame in overlay mode. ~3Hz at 20fps base.
-        // Mobile gets slower rate to preserve battery.
-        this._handFrameSkip = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? 12 : 6;
+        const resourcePolicy = window.CameraResourcePolicy;
+        // Process hands every Nth frame in overlay mode. Mobile gets a slower
+        // rate to preserve battery; the policy also catches desktop-UA iPads.
+        this._handFrameSkip = resourcePolicy?.handOverlayFrameSkip(navigator)
+            ?? (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? 12 : 6);
 
         // Callbacks for frame processing
         this.onFaceMeshResults = null;
@@ -74,9 +76,11 @@ class SharedCameraManager {
         this.lastFrameTime = 0;
         // Mobile devices get lower base FPS to reduce GPU contention with main render loop.
         // 20fps is fine for desktop but causes frame drops/crashes on Android tablets.
-        this._isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-        this._baseFPS = this._isMobile ? 12 : 20;
+        this._isMobile = resourcePolicy?.isMobileDevice(navigator)
+            ?? /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+        this._baseFPS = resourcePolicy?.baseFPS(navigator) ?? (this._isMobile ? 12 : 20);
         this.targetFPS = this._baseFPS;
+        this._resourceConstrained = false;
         this._lastAdaptiveCheck = 0; // Timestamp for periodic FPS adaptation
         this.isManualMode = false; // Tracks if user explicitly chose a mode
 
@@ -568,9 +572,13 @@ class SharedCameraManager {
         this._handSuspended = false;
 
         // FPS pacing: overlay sharing costs ~15%; solo/dedicated runs at base.
-        this.targetFPS = (toHand && toHB)
-            ? Math.max(10, Math.round(this._baseFPS * 0.85))
-            : this._baseFPS;
+        // Transient render pressure is layered on top of this stable config.
+        const hasOverlay = !!(toHand && toHB);
+        this.targetFPS = window.CameraResourcePolicy?.targetFPS(
+            this._baseFPS,
+            hasOverlay,
+            this._resourceConstrained
+        ) ?? (hasOverlay ? Math.max(5, Math.round(this._baseFPS * 0.85)) : this._baseFPS);
 
         // Confidence/auto-switch bookkeeping on primary change (pre-machine
         // startMode parity: manual switches refresh the cooldown, auto doesn't).
@@ -1126,6 +1134,20 @@ class SharedCameraManager {
         try {
             const faceMesh = await this._dep('MediaPipeLoader').load();
             faceMesh.onResults((results) => {
+                const faces = results?.multiFaceLandmarks || [];
+                const landmarks = faces[0];
+                const bus = this._dep('MotionBus') || window.MotionBus;
+                bus?.emit?.('faceLandmarks', landmarks ? {
+                    landmarks,
+                    allFaces: faces,
+                    topology: null,
+                    source: 'mediapipe-legacy',
+                    imageSize: {
+                        width: Number(this.videoElement?.videoWidth) || 0,
+                        height: Number(this.videoElement?.videoHeight) || 0,
+                    },
+                    t: performance.now(),
+                } : null);
                 if (this.activeMode === 'head' && this.onFaceMeshResults) {
                     this.onFaceMeshResults(results);
                 }
@@ -1321,11 +1343,22 @@ class SharedCameraManager {
                     const f = window.getFPS();
                     if (typeof f === 'number' && isFinite(f)) mainFPS = f;
                 }
-                if (mainFPS > 0 && mainFPS < 50) {
-                    // Under 50 FPS: halve camera rate to reduce CPU/GPU contention
+                const policy = window.CameraResourcePolicy;
+                if (policy) {
+                    this._resourceConstrained = policy.nextConstrained(
+                        this._resourceConstrained,
+                        mainFPS
+                    );
+                    const hasOverlay = this._handOverlayActive && !!this.activeMode;
+                    this.targetFPS = policy.targetFPS(
+                        this._baseFPS,
+                        hasOverlay,
+                        this._resourceConstrained
+                    );
+                } else if (mainFPS > 0 && mainFPS < 50) {
+                    // Compatibility path for hosts that have not loaded the policy.
                     this.targetFPS = Math.max(5, Math.round(this._baseFPS / 2));
                 } else {
-                    // FPS healthy: restore base rate
                     this.targetFPS = this._baseFPS;
                 }
             }

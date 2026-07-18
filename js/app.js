@@ -30,6 +30,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const controls = new ControlsUI();
     const benchmark = new BenchmarkHarness(document.getElementById('benchmark-panel'));
 
+    // SharedCameraManager's adaptive inference budget consumes this optional
+    // host signal. Do not replace a product host's own renderer metric.
+    if (typeof window.getFPS !== 'function') {
+        window.getFPS = () => benchmark.getFPS();
+    }
+
     // Forward raw landmarks from detectors to skeleton renderer.
     // Detectors call _onResults internally; we wrap to also emit raw data.
     function hookRawResults(detector, channel) {
@@ -50,11 +56,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Skeleton renderer subscribes to raw landmarks
     window.MotionBus.subscribe('raw_face', (r) => skeleton.updateFace(r));
+    // Portable full-mesh channel from Tasks Vision. Unlike raw_face (the legacy
+    // detector shape), this carries the complete provider mesh plus canonical topology.
+    window.MotionBus.subscribe('faceLandmarks', (r) => skeleton.updateFaceMesh(r));
     window.MotionBus.subscribe('raw_body', (r) => skeleton.updateBody(r));
     window.MotionBus.subscribe('raw_hand', (r) => skeleton.updateHand(r));
 
     // Clear skeleton when a mode is disabled (MotionBus emits null)
-    window.MotionBus.subscribe('rhythmSync', (d) => { if (!d) skeleton.updateFace(null); });
+    window.MotionBus.subscribe('rhythmSync', (d) => {
+        if (!d) {
+            skeleton.updateFace(null);
+            skeleton.updateFaceMesh(null);
+        }
+    });
     window.MotionBus.subscribe('bodyMotion', (d) => { if (!d) skeleton.updateBody(null); });
     window.MotionBus.subscribe('handPose',   (d) => { if (!d) skeleton.updateHand(null); });
 

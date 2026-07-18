@@ -94,7 +94,21 @@ export class TasksVisionAdapter {
                 }
 
                 window.debugManager?.info?.(`FaceLandmarker loaded (${delegate} delegate)`);
-                shim = new FaceLandmarkerShim(landmarker);
+                shim = new FaceLandmarkerShim(landmarker, {
+                    // MediaPipe's public constant keeps the historical
+                    // TESSELATION misspelling. Camerastein's provider-neutral
+                    // payload uses the conventional spelling instead.
+                    tessellation: FaceLandmarker.FACE_LANDMARKS_TESSELATION,
+                    contours: FaceLandmarker.FACE_LANDMARKS_CONTOURS,
+                    faceOval: FaceLandmarker.FACE_LANDMARKS_FACE_OVAL,
+                    lips: FaceLandmarker.FACE_LANDMARKS_LIPS,
+                    leftEye: FaceLandmarker.FACE_LANDMARKS_LEFT_EYE,
+                    rightEye: FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE,
+                    leftEyebrow: FaceLandmarker.FACE_LANDMARKS_LEFT_EYEBROW,
+                    rightEyebrow: FaceLandmarker.FACE_LANDMARKS_RIGHT_EYEBROW,
+                    leftIris: FaceLandmarker.FACE_LANDMARKS_LEFT_IRIS,
+                    rightIris: FaceLandmarker.FACE_LANDMARKS_RIGHT_IRIS,
+                });
                 this.loaded = true;
                 this.loading = false;
                 return shim;

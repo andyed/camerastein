@@ -113,6 +113,11 @@ export class BenchmarkHarness {
         this._dirty = true;
     }
 
+    /** Latest rolling render FPS for camera resource pacing. */
+    getFPS() {
+        return this._fps;
+    }
+
     // --- Internals ---
 
     /**
