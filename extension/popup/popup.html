@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body {
+      width: 240px;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      font-size: 13px;
+      color: #e0e0e0;
+      background: #1a1a24;
+      margin: 0;
+    }
+    h1 {
+      font-size: 15px;
+      margin: 0 0 12px 0;
+      color: #fff;
+    }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    button {
+      background: #2a2a3a;
+      color: #e0e0e0;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 8px 16px;
+      cursor: pointer;
+      font-size: 13px;
+      width: 100%;
+    }
+    button:hover { background: #3a3a4a; }
+    button.active {
+      background: #1a4a48;
+      border-color: #4ecdc4;
+      color: #4ecdc4;
+    }
+    .status {
+      color: #666;
+      font-size: 11px;
+      text-align: center;
+      margin-top: 8px;
+    }
+    .status.on { color: #4ecdc4; }
+    .status.armed { color: #e8a040; }
+    label {
+      display: block;
+      margin-bottom: 4px;
+      color: #999;
+      font-size: 11px;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: #4ecdc4;
+    }
+  </style>
+</head>
+<body>
+  <h1>Slide Gesture</h1>
+
+  <button id="toggle">Enable</button>
+
+  <div class="status" id="status">Disabled</div>
+
+  <div class="row" style="margin-top: 16px;">
+    <div style="width: 100%;">
+      <label>Sensitivity</label>
+      <input type="range" id="sensitivity" min="5" max="25" value="10" step="1">
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

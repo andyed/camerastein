@@ -1,0 +1,16 @@
+{
+  "name": "extension",
+  "version": "1.0.0",
+  "description": "Chrome extension that detects hand swipes via your webcam and sends arrow keys to advance slides. Works with Google Slides, Reveal.js, Slidev, or anything that responds to arrow keys.",
+  "main": "background.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.34"
+  }
+}
