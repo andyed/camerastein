@@ -23,16 +23,19 @@ export function initBlendshapeChannel() {
     const bus = window.MotionBus;
     if (!bus) return;
 
-    // Already registered?
-    if (bus._channels.faceBlendshapes) return;
+    // Register each channel independently. Partial init/hot reload may already have
+    // blendshapes while still lacking the newer portable geometry channel.
+    if (!bus._channels.faceBlendshapes) {
+        bus.state.blendshapes = null;
+        bus._channels.faceBlendshapes = 'blendshapes';
+    }
 
-    // Extend state and channel map at runtime (non-destructive)
-    bus.state.blendshapes = null;
-    bus._channels.faceBlendshapes = 'blendshapes';
-
-    // Also register the raw face-landmarks channel (emitted by face-shim.js)
-    bus.state.landmarks = null;
-    bus._channels.faceLandmarks = 'landmarks';
+    // Raw 478-point geometry and its MediaPipe topology. This mirrors Camerastein's
+    // portable channel; artistic consumers such as Psychodeli's emboss remain separate.
+    if (!bus._channels.faceLandmarks) {
+        bus.state.landmarks = null;
+        bus._channels.faceLandmarks = 'landmarks';
+    }
 }
 
 /**

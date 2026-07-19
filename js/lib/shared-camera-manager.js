@@ -1038,8 +1038,10 @@ class SharedCameraManager {
                     }, {
                         minIntervalMs: 300
                     });
+                    // Host app can set window.__appDisplayName (e.g. 'Psychodeli+') so the
+                    // guidance names the entry the user must find in the Settings list.
                     this._dep('debugManager')?.warn?.(
-                        'Camera permission denied. Check macOS Settings > Privacy & Security > Camera and ensure this app is allowed.'
+                        `Camera permission denied. Check macOS Settings > Privacy & Security > Camera and ensure ${window.__appDisplayName || 'this app'} is allowed.`
                     );
                     throw err;
                 }

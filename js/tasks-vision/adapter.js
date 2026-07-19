@@ -35,6 +35,22 @@ export class TasksVisionAdapter {
         this._tasksVision = null;   // The imported module
     }
 
+    /**
+     * Pick the MediaPipe inference delegate. The 'GPU' delegate spins up a SECOND GL context;
+     * on Android (esp. Mali GPUs inside a Capacitor WebView) that competes with the main WebGL2
+     * visualization context for shared GPU memory and, after a few minutes with the camera on,
+     * OOMs it → the main context is lost → the whole visualization goes blank (observed on a
+     * OnePlus Pad 2). Default to CPU on Android — the camera already runs ~12fps on mobile, so
+     * CPU inference keeps up — and keep GPU elsewhere (iOS WKWebView / desktop handle the dual
+     * context fine). Override with window.__mediapipeDelegate = 'GPU' | 'CPU'.
+     */
+    _defaultDelegate() {
+        const o = (typeof window !== 'undefined' && window.__mediapipeDelegate);
+        if (o === 'GPU' || o === 'CPU') return o;
+        const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent || '');
+        return isAndroid ? 'CPU' : 'GPU';
+    }
+
     /** Load the Tasks Vision WASM fileset (shared across all landmarkers). */
     async _ensureVision() {
         if (this._vision) return this._vision;
@@ -72,7 +88,7 @@ export class TasksVisionAdapter {
                 const vision = await adapter._ensureVision();
                 const { FaceLandmarker } = adapter._tasksVision;
 
-                let delegate = 'GPU';
+                let delegate = adapter._defaultDelegate();
                 let landmarker;
                 try {
                     landmarker = await FaceLandmarker.createFromOptions(vision, {
@@ -145,7 +161,7 @@ export class TasksVisionAdapter {
                 const { PoseLandmarker } = adapter._tasksVision;
 
                 const modelUrl = options.heavy ? MODEL_URLS.poseHeavy : MODEL_URLS.poseLite;
-                let delegate = 'GPU';
+                let delegate = adapter._defaultDelegate();
                 let landmarker;
                 try {
                     landmarker = await PoseLandmarker.createFromOptions(vision, {
@@ -198,7 +214,7 @@ export class TasksVisionAdapter {
                 const vision = await adapter._ensureVision();
                 const { HandLandmarker } = adapter._tasksVision;
 
-                let delegate = 'GPU';
+                let delegate = adapter._defaultDelegate();
                 let landmarker;
                 try {
                     landmarker = await HandLandmarker.createFromOptions(vision, {

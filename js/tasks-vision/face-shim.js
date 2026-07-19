@@ -14,9 +14,9 @@ import { translateFaceResults } from './result-translators.js';
 export class FaceLandmarkerShim {
     constructor(landmarker, topology = null) {
         this._landmarker = landmarker;
-        // Stable MediaPipe connection tables. Keep them beside the raw landmark
-        // frame so sister projects can render the same portable geometry without
-        // importing or duplicating a version-specific topology table.
+        // Stable MediaPipe connection tables (passed in by the adapter). Kept beside
+        // the raw landmark frame so sister projects can render the same portable
+        // geometry without importing or duplicating a version-specific topology table.
         this._topology = topology;
         this._callback = null;
         this._lastTimestamp = 0;
@@ -50,9 +50,11 @@ export class FaceLandmarkerShim {
                 });
             }
 
-            // Emit raw 478 face landmarks (includes iris at 468-477) so consumers
-            // can crop eye regions, draw landmark overlays, and run their own
-            // per-frame geometry. Subscribers: oculens (eye crops + vergence).
+            // Portable raw geometry channel — all 478 landmarks (iris at 468-477),
+            // shared between Psychodeli and Camerastein. HeadBobDetector still
+            // receives the translated legacy shape above; richer consumers (eye
+            // crops, landmark overlays, per-frame geometry — e.g. oculens) opt in
+            // here without changing detector behavior.
             if (result.faceLandmarks?.length > 0) {
                 window.MotionBus?.emit('faceLandmarks', {
                     landmarks: result.faceLandmarks[0],
@@ -66,8 +68,10 @@ export class FaceLandmarkerShim {
                     t: ts
                 });
             } else {
-                // Explicitly clear the channel. Without this, consumers retain
-                // and render the final detected mesh after the face leaves view.
+                // Clear the portable channel immediately — without this, consumers
+                // retain and render the final detected mesh after the face leaves
+                // view, and freshness guards have to compensate for a mesh that
+                // stays in MotionBus forever.
                 window.MotionBus?.emit('faceLandmarks', null);
             }
         } catch (e) {

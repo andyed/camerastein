@@ -101,29 +101,39 @@ HeadBobDetector.prototype._updateMouthState = function(landmarks, now) {
  * Uses mouth corner Y relative to upper/lower lip midline, normalized by face height.
  */
 HeadBobDetector.prototype._updateSmileValence = function(landmarks, now) {
-    const upperLip = landmarks[this.LANDMARKS.MOUTH_UPPER];
-    const lowerLip = landmarks[this.LANDMARKS.MOUTH_LOWER];
-    const leftCorner = landmarks[this.LANDMARKS.MOUTH_LEFT];
-    const rightCorner = landmarks[this.LANDMARKS.MOUTH_RIGHT];
-    const nose = landmarks[this.LANDMARKS.NOSE_TIP];
-    const chin = landmarks[this.LANDMARKS.CHIN];
+    // Unified reads (audit AE_FACE_FEATURES_AUDIT.md §4 opportunity #5): the
+    // semantic channel's blendshape valenceRaw replaces the corner-vs-midline
+    // geometry as the INPUT — this machine keeps its OWN smoothing, baseline,
+    // thresholds, debounce, and dispatch untouched. valenceRaw (not valence)
+    // on purpose: the channel's personal-neutral calibration would double up
+    // with the baseline logic below. Replace, don't add: exactly one source
+    // per frame; null (flags off / stale / no expressions) → legacy geometry.
+    let scaled = this._channelValenceRaw();
+    if (scaled === null) {
+        const upperLip = landmarks[this.LANDMARKS.MOUTH_UPPER];
+        const lowerLip = landmarks[this.LANDMARKS.MOUTH_LOWER];
+        const leftCorner = landmarks[this.LANDMARKS.MOUTH_LEFT];
+        const rightCorner = landmarks[this.LANDMARKS.MOUTH_RIGHT];
+        const nose = landmarks[this.LANDMARKS.NOSE_TIP];
+        const chin = landmarks[this.LANDMARKS.CHIN];
 
-    if (!upperLip || !lowerLip || !leftCorner || !rightCorner || !nose || !chin) return;
+        if (!upperLip || !lowerLip || !leftCorner || !rightCorner || !nose || !chin) return;
 
-    // Midline Y between upper and lower lip centers
-    const lipMidY = (upperLip.y + lowerLip.y) / 2;
+        // Midline Y between upper and lower lip centers
+        const lipMidY = (upperLip.y + lowerLip.y) / 2;
 
-    // Average corner Y (lower Y = higher on screen in normalized coords,
-    // but MediaPipe uses 0=top, 1=bottom, so corners ABOVE midline = smaller Y = smile)
-    const avgCornerY = (leftCorner.y + rightCorner.y) / 2;
+        // Average corner Y (lower Y = higher on screen in normalized coords,
+        // but MediaPipe uses 0=top, 1=bottom, so corners ABOVE midline = smaller Y = smile)
+        const avgCornerY = (leftCorner.y + rightCorner.y) / 2;
 
-    // Raw smile signal: negative means corners are above midline (smile)
-    // Normalize by face height for scale invariance
-    const faceHeight = Math.abs(chin.y - nose.y) || 0.1;
-    const rawValence = (lipMidY - avgCornerY) / faceHeight;
+        // Raw smile signal: negative means corners are above midline (smile)
+        // Normalize by face height for scale invariance
+        const faceHeight = Math.abs(chin.y - nose.y) || 0.1;
+        const rawValence = (lipMidY - avgCornerY) / faceHeight;
 
-    // Scale to roughly -1..+1 (typical smile deflection is ~5-15% of face height)
-    const scaled = Math.max(-1, Math.min(1, rawValence * 8));
+        // Scale to roughly -1..+1 (typical smile deflection is ~5-15% of face height)
+        scaled = Math.max(-1, Math.min(1, rawValence * 8));
+    }
 
     // Smooth with asymmetric alpha — fast onset (notice smile quickly), slow release
     const prev = this._smileValence || 0;
@@ -184,6 +194,24 @@ HeadBobDetector.prototype._updateSmileValence = function(landmarks, now) {
             }
         }
     }
+};
+
+/**
+ * Read the semantic channel's absolute (uncalibrated) valence for the unified-
+ * reads path. Guards mirror GazeEngagementTracker._channelEARs: both flags on,
+ * fresh frame, face present, expressions actually available
+ * (quality.hasExpressions — a landmarks-only frame would feed a constant 0
+ * here and silently drag the personal baseline to zero).
+ * @returns {number|null} valenceRaw in [-1, 1], or null → use legacy geometry
+ */
+HeadBobDetector.prototype._channelValenceRaw = function() {
+    if (window.__faceExprUnified !== true || window.__faceFeatureChannel !== true) return null;
+    let r = null;
+    try { r = window.FaceFeatures?.read?.(); } catch (_) { return null; }
+    const f = (r && r.fresh) ? r.features : null;
+    if (!f || !f.quality || !f.quality.facePresent || !f.quality.hasExpressions) return null;
+    const v = f.expression ? f.expression.valenceRaw : NaN;
+    return (typeof v === 'number' && isFinite(v)) ? Math.max(-1, Math.min(1, v)) : null;
 };
 
 /**

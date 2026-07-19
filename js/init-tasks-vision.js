@@ -10,6 +10,7 @@
 
 import { TasksVisionAdapter } from './tasks-vision/adapter.js';
 import { initBlendshapeChannel } from './tasks-vision/blendshape-channel.js';
+import { initFaceFeatureChannel } from './tasks-vision/face-feature-channel.js';
 
 const debug = {
     info: (...args) => console.log('[camerastein:tasks-vision]', ...args),
@@ -59,6 +60,12 @@ window.HandPoseDetector.init({
 
 // Register blendshape channel on MotionBus
 initBlendshapeChannel();
+
+// Semantic face-feature channel (valence/jawOpen/brow/gaze + dynamics), shared
+// contract with Psychodeli (FACE_FEATURE_CONTRACT.md). Registration is cheap and
+// observation-only; extraction runs only while window.__faceFeatureChannel === true,
+// so the testbed can flip the flag live to inspect FaceFeatures.status().
+initFaceFeatureChannel();
 
 // Expose debug for other modules
 window.debugManager = debug;
