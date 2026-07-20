@@ -37,15 +37,21 @@ The camera runs a single video stream. SharedCameraManager enforces a two-tier s
 
 **Primary slot (exclusive):** Head and Body share one processing slot — only one runs at a time. Activating Body stops Head, and vice versa. When both modes have been used in a session, auto-switch engages: if the active detector's confidence drops below 0.3 for 2+ seconds (face leaves frame, body turns away), it switches to the other. Cooldown prevents rapid oscillation (5s between switches).
 
-**Overlay slot (concurrent):** Hands run alongside whichever primary is active, but throttled — processing every 6th frame on desktop (~3 Hz at 20 FPS base) and every 12th on mobile. This prevents the hand model from starving the primary detector of GPU/CPU time.
+**Overlay slot (concurrent):** Hands run alongside whichever primary is active, but throttled — every 6th paced tick on desktop, every 12th on mobile. Because the skip counter advances per *paced* tick (not per rAF frame), the achieved hand rate is `targetFPS / skip`: ~2.8 Hz on desktop (17 fps loop ÷ 6), but only ~0.83 Hz on mobile (10 fps loop ÷ 12) — and half that again under render pressure. That's up to 1.2–2.4 s of gesture latency on mobile.
 
 This is the current implementation boundary: automation switches **Head ↔ Body**. Hands are manually enabled as either the throttled overlay or the dedicated detector; hand activity does not yet participate in automatic switching.
 
 ```
-Frame loop:  [Head] [Head] [Head] [Head] [Head] [Hand+Head] [Head] [Head] ...
-                                                  ↑
-                                          overlay fires every Nth frame
+Skip (default):   [Head] [Head] [Head] [Head] [Head] [Hand+Head] [Head] ...
+                                                       ↑ overlay every Nth paced tick
+
+Interleave:       [Head] [Head] [Hand] [Head] [Head] [Hand] [Head] ...
+                                  ↑ one model per tick, ratio 2:1
 ```
+
+**Experimental: interleave scheduler.** Set `window.__handInterleave = true` (ratio via `window.__handInterleaveRatio`, default 2) to alternate primary and hand inference across paced ticks instead of starving hands. Each tick runs exactly one model, so the 0.85 overlay FPS tax is skipped — on mobile at 12 fps with ratio 2 that yields primary ~8 Hz / hands ~4 Hz versus the default 10 Hz / 0.83 Hz. The body-probe window suspends interleaving (its velocity math assumes consecutive pose frames). Off by default until validated on a real device via the tracking stats below.
+
+**Tracking telemetry.** `camera-tracking-stats.js` times every `send()` per channel (`face` / `pose` / `hand`) into a shared `window.CameraTrackingStats` singleton. `sharedCameraManager.getTrackingStats()` returns the scheduler mode, planned vs. achieved per-channel rates, p50/p95 inference latency, and `loadMsPerSec` — total inference milliseconds per wall-clock second, the honest "what does tracking cost the main thread" number. Currently a console/diagnostic API; not yet folded into the bench panel export.
 
 Both MediaPipe models stay loaded in memory (~7 MB total) for instant switching. The latency on mode switch is the frame processing time, not a model reload.
 
@@ -54,7 +60,7 @@ Both MediaPipe models stay loaded in memory (~7 MB total) for instant switching.
 Camerastein is the portability boundary for more ambitious camera resource policy. The next scheduler should separate two decisions:
 
 1. An **attention arbiter** promotes face, hand, or body from low-rate scouting to foreground quality based on presence and meaningful activity. The first target is face↔hand: face at roughly 10–12 Hz with hands scouting near 2 Hz, then hands at 8–12 Hz while an active gesture is sustained and face drops to a watchdog rate.
-2. A **deadline scheduler** budgets work using measured inference cost per model, device class, render FPS, visibility, and constrained/thermal state. Fixed frame skips remain safe defaults, not the final policy.
+2. A **deadline scheduler** budgets work using measured inference cost per model, device class, render FPS, visibility, and constrained/thermal state. Fixed frame skips remain safe defaults, not the final policy. `CameraTrackingStats` now supplies the measured-cost input, and the interleave scheduler is the first concrete step past fixed skips.
 
 Promotion needs dwell and hysteresis (`FACE_FOREGROUND → HAND_CANDIDATE → HAND_FOREGROUND`), a cooldown, and a user override. Model residency should be independently configurable: keep models warm when memory permits, unload inactive models on constrained devices. Exported benchmarks should include scheduler state, transitions, inference cost, and missed deadlines so Psychodeli and native iOS can adopt a policy already tested here.
 
@@ -78,6 +84,8 @@ js/lib/           # Detection library (shared with Psychodeli+)
   mediapipe-loader.js     # FaceMesh singleton
   pose-loader.js          # Pose singleton
   hands-loader.js         # Hands singleton
+  camera-resource-policy.js # Pure pacing policy — FPS targets, frame skip, interleave slots
+  camera-tracking-stats.js  # Per-channel inference latency + achieved-rate telemetry
   shared-camera-manager.js # Single camera stream, multi-detector
   head-bob-detector.js    # Face/head signal processing
   body-motion-detector.js # Body/pose signal processing
@@ -133,7 +141,7 @@ To add a new detector (e.g., gaze tracking):
 
 The MotionBus doesn't care what you emit — any channel name works.
 
-Run `npm test` for the focused portable face-mesh contract and renderer checks.
+Run `npm test` for the portable face-mesh contract, renderer checks, pacing-policy math (interleave slots, planned rates, hysteresis), and tracking-stats telemetry.
 
 ## Benchmarking
 

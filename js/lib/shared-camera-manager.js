@@ -67,6 +67,15 @@ class SharedCameraManager {
         this._handFrameSkip = resourcePolicy?.handOverlayFrameSkip(navigator)
             ?? (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ? 12 : 6);
 
+        // Interleave scheduler (js/lib/camera-resource-policy.js interleaveSlot).
+        // Alternates primary/hand across paced ticks instead of starving hands to
+        // ~0.83Hz on mobile. Monotonic tick counter drives the slot phase.
+        this._pacedTick = 0;
+        // Per-channel inference latency + achieved rate. Always on: it is the only
+        // way mobile pacing is observable (headless has no camera), and it is what
+        // validates the interleave change on a real device via getTrackingStats().
+        this._trackingStats = window.CameraTrackingStats || null;
+
         // Callbacks for frame processing
         this.onFaceMeshResults = null;
         this.onPoseResults = null;
@@ -1130,6 +1139,58 @@ class SharedCameraManager {
     }
 
     /**
+     * Run one model send, timing it into CameraTrackingStats.
+     *
+     * detectForVideo is a synchronous WASM call under the shim, so this wall time IS
+     * the main-thread stall the 60fps renderer pays for tracking. Errors propagate
+     * unchanged — callers own their own catch semantics (hands must not kill primary).
+     */
+    async _timedSend(channel, model, frameSource) {
+        const t0 = performance.now();
+        try {
+            await model.send({ image: frameSource });
+        } finally {
+            this._trackingStats?.record?.(channel, performance.now() - t0);
+        }
+    }
+
+    /**
+     * Is the interleave scheduler active right now? Only meaningful when hands share
+     * the loop with a primary detector — dedicated hand mode already runs every tick.
+     */
+    _interleaveActive() {
+        // Default OFF: this changes mobile pacing and has not been measured on a real
+        // device yet. Flip =true on-device, read getTrackingStats(), then graduate.
+        // _handSuspended check: once hand errors suspend the model, hand slots would
+        // run nothing — fall back to skip mode so the primary keeps every tick.
+        return window.__handInterleave === true
+            && this._handOverlayActive
+            && !this._handSuspended
+            && !this._handPrimaryMode
+            && !!this.activeMode;
+    }
+
+    /** Planned vs achieved rates — the readout for validating pacing changes on-device. */
+    getTrackingStats() {
+        const policy = window.CameraResourcePolicy;
+        const interleaved = this._interleaveActive();
+        const planned = policy?.plannedRates?.(
+            this.targetFPS,
+            interleaved ? 'interleave' : 'skip',
+            window.__handInterleaveRatio ?? 2,
+            this._handFrameSkip
+        ) || null;
+        return {
+            scheduler: interleaved ? 'interleave' : 'skip',
+            targetFPS: this.targetFPS,
+            constrained: this._resourceConstrained,
+            planned,
+            achieved: this._trackingStats?.summary?.() || null,
+            loadMsPerSec: this._trackingStats?.loadMsPerSec?.() || null,
+        };
+    }
+
+    /**
      * Load Face Mesh model
      */
     async _loadFaceMesh() {
@@ -1355,7 +1416,8 @@ class SharedCameraManager {
                     this.targetFPS = policy.targetFPS(
                         this._baseFPS,
                         hasOverlay,
-                        this._resourceConstrained
+                        this._resourceConstrained,
+                        this._interleaveActive()
                     );
                 } else if (mainFPS > 0 && mainFPS < 50) {
                     // Compatibility path for hosts that have not loaded the policy.
@@ -1376,10 +1438,24 @@ class SharedCameraManager {
                     return;
                 }
 
+                // Interleave: this paced tick belongs to EITHER the primary detector or
+                // hands, never both. Without it, hands are starved to targetFPS/skip
+                // (~0.83Hz on mobile). The slot phase advances once per paced tick.
+                const interleaved = this._interleaveActive();
+                const slot = interleaved
+                    ? (window.CameraResourcePolicy?.interleaveSlot(
+                        this._pacedTick++, window.__handInterleaveRatio ?? 2) || 'primary')
+                    : null;
+                // The body probe assumes CONSECUTIVE pose frames for its velocity math
+                // (dt ~50ms, see _beginBodyProbe). Interleaving would halve that and
+                // skew wristVelocity, so the probe window suspends interleave entirely.
+                const primarySlot = !interleaved || slot === 'primary' || this.isProbingBody;
+                const handSlot = !interleaved || (slot === 'hand' && !this.isProbingBody);
+
                 try {
                     // Head Mode (Primary) - Only run if NOT probing body
-                    if (this.activeMode === 'head' && this.faceMesh && !this.isProbingBody) {
-                        await this.faceMesh.send({ image: frameSource });
+                    if (primarySlot && this.activeMode === 'head' && this.faceMesh && !this.isProbingBody) {
+                        await this._timedSend('face', this.faceMesh, frameSource);
 
                         // Periodic body probe: while in face mode with auto-switch on,
                         // peek at pose every few seconds to detect arm-waving.
@@ -1398,8 +1474,8 @@ class SharedCameraManager {
                     }
 
                     // Body Mode OR Probing - Run Pose
-                    if ((this.activeMode === 'body' || this.isProbingBody) && this.pose) {
-                        await this.pose.send({ image: frameSource });
+                    if (primarySlot && (this.activeMode === 'body' || this.isProbingBody) && this.pose) {
+                        await this._timedSend('pose', this.pose, frameSource);
 
                         // Active Probe Logic: Check results immediately
                         if (this.isProbingBody) {
@@ -1421,13 +1497,15 @@ class SharedCameraManager {
 
                     // Hand tracking — full rate when primary, throttled when overlay.
                     // Separate try/catch so hand errors never affect primary tracking.
-                    if (this._handOverlayActive && !this._handSuspended && this.hands) {
-                        // Primary mode: process every frame. Overlay mode: every Nth frame.
+                    if (handSlot && this._handOverlayActive && !this._handSuspended && this.hands) {
+                        // Dedicated: every frame. Interleave: every hand slot (the slot
+                        // gate above already did the throttling). Legacy: every Nth frame.
                         const shouldProcess = this._handPrimaryMode
+                            || interleaved
                             || (++this._handFrameCounter >= this._handFrameSkip && (this._handFrameCounter = 0, true));
                         if (shouldProcess) {
                             try {
-                                await this.hands.send({ image: frameSource });
+                                await this._timedSend('hand', this.hands, frameSource);
                             } catch (handErr) {
                                 const msg = handErr?.message || String(handErr);
                                 if (this._isFatalFrameError(handErr)) {
