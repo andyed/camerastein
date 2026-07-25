@@ -33,9 +33,18 @@ silently changing the artistic response.
 
 The v1 vocabulary deliberately contains three different state-machine shapes:
 
-1. **Tracks** (`mouth`, `brow`, `leanIn`, `leanOut`) describe an expression
-   that can be entered, held, and released. Consumers may read their continuous
-   `value` every frame, but should use lifecycle events for punctuation.
+1. **Tracks** (`mouth`, `brow`, `smile`, `frown`, `leanIn`, `leanOut`) describe
+   an expression that can be entered, held, and released. Consumers may read
+   their continuous `value` every frame, but should use lifecycle events for
+   punctuation.
+
+   `smile`/`frown` and `leanIn`/`leanOut` are **signed pairs**: one underlying
+   axis (personal-neutral-corrected valence; calibrated proximity) split into
+   two tracks so each direction owns its own episode, lifecycle, and id. The
+   two halves of a pair are mutually exclusive by construction — only the
+   positive half of the signal reaches each track. `frown` is the sad mouth
+   (corners down, MediaPipe `mouthFrown`), **not** a brow furrow; a furrowed
+   brow is a separate future gesture and must not be folded into this one.
 2. **Cycles** (`nod`, `shake`) require ordered motion through pose space. A
    threshold crossing alone is not a completed gesture.
 3. **Compounds** (`scream`) combine otherwise-independent evidence. Scream
@@ -58,6 +67,8 @@ Every trustworthy primary-face feature frame produces:
   tracks: {
     mouth:  Track,
     brow:   Track & { side?: 'left' | 'right' | 'both' },
+    smile:  Track,
+    frown:  Track,
     leanIn: Track,
     leanOut: Track
   },
@@ -104,6 +115,8 @@ neutral calibration, active episodes, and refractory windows.
 |---|---|---|
 | Mouth | jaw crosses enter threshold, peaks, then crosses release threshold | `start → peak → release` |
 | Brow | either/both brows cross enter, peak, release | `start → peak → release` |
+| Smile | positive valence crosses enter, peaks, then releases | `start → peak → release` |
+| Frown | negative valence crosses enter, peaks, then releases | `start → peak → release` |
 | Lean in/out | calibrated proximity crosses the directional threshold, then returns | `start → peak → release` |
 | Nod | pitch excursion, velocity reversal, return through neutral | `start → peak → complete` |
 | Shake | yaw excursion, reversal, then a real opposite lobe | `start → peak → complete` |
@@ -127,6 +140,7 @@ above remain intact.
 |---|---:|---:|---:|
 | Mouth | jaw `0.35` | jaw `0.20` | none |
 | Brow | max brow `0.40` | max brow `0.25` | none |
+| Smile / Frown | signed valence `0.30` | signed valence `0.15` | none |
 | Lean in/out | signed proximity `0.35` | signed proximity `0.15` | none |
 | Nod | pitch excursion `0.12`, velocity `0.18`, arm `300 ms` | reversal `0.10`, neutral band `0.045` | `1100 ms` max, `350 ms` refractory |
 | Shake | yaw excursion `0.12`, velocity `0.18`, arm `300 ms` | reversal `0.10`, opposite lobe `0.10` | `1250 ms` max, `500 ms` refractory |
@@ -156,6 +170,12 @@ Two properties are part of the contract, not tuning:
   timed-out cycle cannot restart itself from a held pose.
 
 Track peak detection uses a `0.12` velocity epsilon (lean uses `0.10`).
+Smile and frown share symmetric thresholds deliberately. The `mouthFrown`
+blendshape is the weaker half of the valence axis, but lowering frown's entry to
+compensate would buy sensitivity with false positives on a resting mouth — which
+is precisely what the personal-neutral baseline exists to suppress. Note the
+interaction: because that baseline drifts with a `25 s` time constant, an
+expression held far longer than a phrase is gradually re-learned as neutral.
 Pose neutral drifts with a `2400 ms` time constant only while the corresponding
 cycle is inactive and velocity is below `0.08`. This is why slow repositioning
 does not become a nod or shake.

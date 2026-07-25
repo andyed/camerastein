@@ -175,6 +175,73 @@ test('lean-in and lean-out remain separate signed episodes', () => {
     assert.deepEqual(phases(leanOut, 'leanIn'), []);
 });
 
+test('smile and frown are separate signed episodes of one valence axis', () => {
+    const r = new FaceGestureRecognizer();
+    r.update(features(0, { expression: { valence: 0 } }));
+    const smiled = r.update(features(40, {
+        expression: { valence: 0.5 },
+        dynamics: { valenceVel: 0.9 },
+    }));
+    assert.deepEqual(phases(smiled, 'smile'), ['start']);
+    assert.deepEqual(phases(smiled, 'frown'), []);
+
+    const released = r.update(features(90, {
+        expression: { valence: 0.05 },
+        dynamics: { valenceVel: -0.9 },
+    }));
+    assert.equal(eventsOf(released, 'smile').at(-1).phase, 'release');
+
+    const frowned = r.update(features(140, {
+        expression: { valence: -0.5 },
+        dynamics: { valenceVel: -0.9 },
+    }));
+    assert.deepEqual(phases(frowned, 'frown'), ['start']);
+    assert.deepEqual(phases(frowned, 'smile'), []);
+});
+
+test('a frown completes its own start → peak → release lifecycle', () => {
+    const r = new FaceGestureRecognizer();
+    r.update(features(0, { expression: { valence: 0 } }));
+    assert.deepEqual(phases(r.update(features(40, {
+        expression: { valence: -0.45 },
+        dynamics: { valenceVel: -0.9 },
+    })), 'frown'), ['start']);
+    // Deepening then settling: the peak is emitted when the track stops growing.
+    assert.deepEqual(phases(r.update(features(120, {
+        expression: { valence: -0.60 },
+        dynamics: { valenceVel: -0.02 },
+    })), 'frown'), ['peak']);
+    assert.deepEqual(phases(r.update(features(200, {
+        expression: { valence: -0.05 },
+        dynamics: { valenceVel: 0.9 },
+    })), 'frown'), ['release']);
+});
+
+test('a resting mouth never opens a smile or frown episode', () => {
+    const r = new FaceGestureRecognizer();
+    r.update(features(0, { expression: { valence: 0 } }));
+    // Personal-neutral corrected valence hovering around zero with jitter.
+    for (const [t, v] of [[40, 0.08], [80, -0.11], [120, 0.05], [160, -0.09]]) {
+        const f = r.update(features(t, {
+            expression: { valence: v },
+            dynamics: { valenceVel: v > 0 ? 0.3 : -0.3 },
+        }));
+        assert.deepEqual(phases(f, 'smile'), []);
+        assert.deepEqual(phases(f, 'frown'), []);
+    }
+});
+
+test('geometry-only frames suppress smile and frown intent', () => {
+    const r = new FaceGestureRecognizer();
+    const frame = r.update(features(0, {
+        quality: { hasExpressions: 0 },
+        expression: { valence: -0.9 },
+        dynamics: { valenceVel: -9 },
+    }));
+    assert.equal(frame.tracks.smile.active, false);
+    assert.equal(frame.tracks.frown.active, false);
+});
+
 test('geometry-only frames suppress mouth, brow, and scream intent', () => {
     const r = new FaceGestureRecognizer();
     const frame = r.update(features(0, {

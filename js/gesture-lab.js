@@ -27,6 +27,18 @@ export const GESTURE_DEFINITIONS = Object.freeze({
         family: 'track',
         expected: ['start', 'peak', 'release'],
     }),
+    smile: Object.freeze({
+        label: 'Smile',
+        cue: 'Smile, hold, then relax',
+        family: 'track',
+        expected: ['start', 'peak', 'release'],
+    }),
+    frown: Object.freeze({
+        label: 'Frown',
+        cue: 'Turn mouth corners down, hold, relax',
+        family: 'track',
+        expected: ['start', 'peak', 'release'],
+    }),
     leanIn: Object.freeze({
         label: 'Lean in',
         cue: 'Move closer, pause, return',
@@ -158,6 +170,52 @@ export function createGestureRehearsal(kind, startT = 0) {
                 expression: { browRaiseL: 0.08, browRaiseR: 0.07 },
                 dynamics: { browLVel: -1, browRVel: -1 },
                 authority: 0.08,
+            }),
+        ],
+        smile: [
+            neutral,
+            featureFrame(t + 50, {
+                expression: { valence: 0.45 },
+                dynamics: { valenceVel: 0.9 },
+                authority: 0.45,
+            }),
+            featureFrame(t + 120, {
+                expression: { valence: 0.62 },
+                dynamics: { valenceVel: 0.2 },
+                authority: 0.62,
+            }),
+            featureFrame(t + 180, {
+                expression: { valence: 0.58 },
+                dynamics: { valenceVel: 0 },
+                authority: 0.58,
+            }),
+            featureFrame(t + 250, {
+                expression: { valence: 0.04 },
+                dynamics: { valenceVel: -0.9 },
+                authority: 0.04,
+            }),
+        ],
+        frown: [
+            neutral,
+            featureFrame(t + 50, {
+                expression: { valence: -0.45 },
+                dynamics: { valenceVel: -0.9 },
+                authority: 0.45,
+            }),
+            featureFrame(t + 120, {
+                expression: { valence: -0.62 },
+                dynamics: { valenceVel: -0.2 },
+                authority: 0.62,
+            }),
+            featureFrame(t + 180, {
+                expression: { valence: -0.58 },
+                dynamics: { valenceVel: 0 },
+                authority: 0.58,
+            }),
+            featureFrame(t + 250, {
+                expression: { valence: -0.04 },
+                dynamics: { valenceVel: 0.9 },
+                authority: 0.04,
             }),
         ],
         leanIn: [

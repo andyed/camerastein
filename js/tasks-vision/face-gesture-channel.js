@@ -21,6 +21,14 @@ const TRACK_CONFIG = Object.freeze({
     brow:    { enter: 0.40, exit: 0.25, velEps: 0.12 },
     leanIn:  { enter: 0.35, exit: 0.15, velEps: 0.10 },
     leanOut: { enter: 0.35, exit: 0.15, velEps: 0.10 },
+    // Valence is one signed axis (mouthSmile − mouthFrown, personal-neutral
+    // corrected), split into two tracks exactly as proximity splits into
+    // leanIn/leanOut. Symmetric thresholds: the frown blendshape is the weaker
+    // of the pair, but lowering its entry to compensate would buy sensitivity
+    // with false positives on a resting mouth — the very thing the personal
+    // baseline exists to suppress.
+    smile:   { enter: 0.30, exit: 0.15, velEps: 0.12 },
+    frown:   { enter: 0.30, exit: 0.15, velEps: 0.12 },
 });
 
 const CYCLE_CONFIG = Object.freeze({
@@ -125,6 +133,8 @@ export class FaceGestureRecognizer {
             brow: makeTrack(),
             leanIn: makeTrack(),
             leanOut: makeTrack(),
+            smile: makeTrack(),
+            frown: makeTrack(),
         };
         this._cycles = { nod: makeCycle(), shake: makeCycle() };
         this._neutral = { pitch: null, yaw: null };
@@ -447,13 +457,23 @@ export class FaceGestureRecognizer {
         const proximity = clamp(num(pose.proximity), -1, 1);
         const proximityVel = num(dynamics.proximityVel);
 
+        // Valence carries both halves of the mouth axis; the negative half is
+        // the sad mouth (corners down), NOT a brow furrow. Velocity is negated
+        // with the value so a deepening frown reads as a rising track.
+        const valence = clamp(num(expression.valence), -1, 1);
+        const valenceVel = num(dynamics.valenceVel);
+
         if (q.hasExpressions) {
             this._updateTrack('mouth', jaw, dynamics.jawVel, t, events);
             this._updateTrack('brow', brow, browVel, t, events, { side: browSide });
+            this._updateTrack('smile', Math.max(0, valence), valenceVel, t, events);
+            this._updateTrack('frown', Math.max(0, -valence), -valenceVel, t, events);
             this._updateScream(jaw, brow, t, events);
         } else {
             this._updateTrack('mouth', 0, -1, t, events);
             this._updateTrack('brow', 0, -1, t, events);
+            this._updateTrack('smile', 0, -1, t, events);
+            this._updateTrack('frown', 0, -1, t, events);
             this._updateScream(0, 0, t, events);
         }
         this._updateTrack('leanIn', Math.max(0, proximity), proximityVel, t, events);
@@ -475,6 +495,8 @@ export class FaceGestureRecognizer {
                 brow: copyTrack(this._tracks.brow),
                 leanIn: copyTrack(this._tracks.leanIn),
                 leanOut: copyTrack(this._tracks.leanOut),
+                smile: copyTrack(this._tracks.smile),
+                frown: copyTrack(this._tracks.frown),
             },
             cycles: {
                 nod: copyCycle(this._cycles.nod),
