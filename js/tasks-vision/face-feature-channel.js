@@ -278,8 +278,17 @@ export class FaceFeatureExtractor {
         this._baseValence = null;
         this._baseScale = null;
         // Dynamics state
-        this._prev = null;         // { valence, jawOpen, gazeX, yaw }
-        this._vel = { valence: 0, jawOpen: 0, gazeX: 0, yaw: 0 };
+        this._prev = null;         // previous scalar snapshot for first derivatives
+        this._vel = {
+            valence: 0,
+            jawOpen: 0,
+            browRaiseL: 0,
+            browRaiseR: 0,
+            gazeX: 0,
+            yaw: 0,
+            pitch: 0,
+            proximity: 0,
+        };
         this._holdSince = { smile: 0, jawOpen: 0 };
         return this;
     }
@@ -379,16 +388,26 @@ export class FaceFeatureExtractor {
         const eyeOpenness = clamp01(1 - (blinkL + blinkR) / 2);
 
         // ---- dynamics family: smoothed first derivatives + hold + onset ----
-        const p = this._prev || { valence, jawOpen, gazeX, yaw };
+        const p = this._prev || {
+            valence, jawOpen, browRaiseL, browRaiseR,
+            gazeX, yaw, pitch, proximity,
+        };
         const velRaw = {
             valence: (valence - p.valence) / dt,
             jawOpen: (jawOpen - p.jawOpen) / dt,
+            browRaiseL: (browRaiseL - p.browRaiseL) / dt,
+            browRaiseR: (browRaiseR - p.browRaiseR) / dt,
             gazeX: (gazeX - p.gazeX) / dt,
             yaw: (yaw - p.yaw) / dt,
+            pitch: (pitch - p.pitch) / dt,
+            proximity: (proximity - p.proximity) / dt,
         };
         const kv = emaK(dt, this.opts.velTau);
         for (const k in this._vel) this._vel[k] += (num(velRaw[k]) - this._vel[k]) * kv;
-        this._prev = { valence, jawOpen, gazeX, yaw };
+        this._prev = {
+            valence, jawOpen, browRaiseL, browRaiseR,
+            gazeX, yaw, pitch, proximity,
+        };
 
         // hold: how long the expression has been continuously sustained
         if (valence > 0.25) { if (!this._holdSince.smile) this._holdSince.smile = t; }
@@ -435,8 +454,12 @@ export class FaceFeatureExtractor {
             dynamics: {
                 valenceVel: num(this._vel.valence),
                 jawVel: num(this._vel.jawOpen),
+                browLVel: num(this._vel.browRaiseL),
+                browRVel: num(this._vel.browRaiseR),
                 gazeXVel: num(this._vel.gazeX),
                 yawVel: num(this._vel.yaw),
+                pitchVel: num(this._vel.pitch),
+                proximityVel: num(this._vel.proximity),
                 smileHoldMs, jawHoldMs, onset,
             },
             authority,
@@ -458,7 +481,8 @@ export class FaceFeatureExtractor {
             attention: { gazeX: 0, gazeY: 0, eyeOpenness: 0 },
             pose: { yaw: 0, pitch: 0, roll: 0, proximity: 0, faceScale: 0 },
             dynamics: {
-                valenceVel: 0, jawVel: 0, gazeXVel: 0, yawVel: 0,
+                valenceVel: 0, jawVel: 0, browLVel: 0, browRVel: 0,
+                gazeXVel: 0, yawVel: 0, pitchVel: 0, proximityVel: 0,
                 smileHoldMs: 0, jawHoldMs: 0, onset: { smile: false, jawOpen: false },
             },
             authority: 0,

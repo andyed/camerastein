@@ -11,6 +11,7 @@
 import { TasksVisionAdapter } from './tasks-vision/adapter.js';
 import { initBlendshapeChannel } from './tasks-vision/blendshape-channel.js';
 import { initFaceFeatureChannel } from './tasks-vision/face-feature-channel.js';
+import { initFaceGestureChannel } from './tasks-vision/face-gesture-channel.js';
 
 const debug = {
     info: (...args) => console.log('[camerastein:tasks-vision]', ...args),
@@ -61,11 +62,16 @@ window.HandPoseDetector.init({
 // Register blendshape channel on MotionBus
 initBlendshapeChannel();
 
+// Camerastein is the recognition workbench: observe the shared semantic and
+// gesture channels by default, while preserving explicit live overrides.
+if (typeof window.__faceFeatureChannel === 'undefined') window.__faceFeatureChannel = true;
+if (typeof window.__faceGestureChannel === 'undefined') window.__faceGestureChannel = true;
+
 // Semantic face-feature channel (valence/jawOpen/brow/gaze + dynamics), shared
 // contract with Psychodeli (FACE_FEATURE_CONTRACT.md). Registration is cheap and
-// observation-only; extraction runs only while window.__faceFeatureChannel === true,
-// so the testbed can flip the flag live to inspect FaceFeatures.status().
+// observation-only; flags can still be flipped live for A/B inspection.
 initFaceFeatureChannel();
+initFaceGestureChannel();
 
 // Expose debug for other modules
 window.debugManager = debug;

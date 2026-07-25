@@ -4,6 +4,22 @@
 
 MediaPipe detectors consume live camera feeds. Repeatable tests need **deterministic video input** — same frames, same person, same lighting, every run. The strategy: record reference clips from the app itself, then replay them through the detectors and compare signal output against saved baselines.
 
+Face gestures add a second deterministic layer that does not require video:
+provider-neutral `FaceFeatures` frames can be passed directly into the pure,
+clock-explicit `FaceGestureRecognizer`. The in-app
+[Face Gesture Lab](FACE_GESTURE_LAB.md) uses those same sequences for each
+**rehearse** action, so the operator surface and automated lifecycle tests share
+one source of truth.
+
+Keep the two layers separate:
+
+| Layer | Input | Proves | Does not prove |
+|---|---|---|---|
+| Gesture rehearsal | synthetic `FaceFeatures` | recognizer state machine, event order, UI wiring | camera/provider extraction |
+| Video replay | recorded pixels | provider translation + features + recognizer | subjective Psychodeli response |
+| Live operator script | real person/camera | calibration, thresholds, false positives, ergonomics | deterministic regression |
+| Psychodeli audition | shared gestures + Self | visual choreography and felt amplitude | recognizer correctness by itself |
+
 ## Video-as-Source Architecture
 
 SharedCameraManager calls `getUserMedia()` internally, but MediaPipe models accept any `HTMLVideoElement`. The path:
@@ -26,6 +42,7 @@ SharedCameraManager calls `getUserMedia()` internally, but MediaPipe models acce
 | `empty-room.webm` | 5s | No person — validates null/inactive state, no false detections |
 | `enter-exit.webm` | 10s | Person walks in and out of frame — validates face entrance/exit events |
 | `low-light.webm` | 10s | Dim conditions — validates graceful degradation |
+| `face-gestures.webm` | 20s | neutral → mouth → brow L/R → lean in/out → nod → shake → scream, with negative controls |
 
 ## Multi-Person & Crowd Tracking
 
@@ -81,12 +98,33 @@ MediaPipe and related projects that handle crowds:
 - Compare P50/P95 latency, memory
 - Flag regressions > 10%
 
-## Vitest Integration
+## Automated test integration
 
-- **Unit tests** for MotionBus (pure JS, no camera needed)
-- **Unit tests** for signal processing math in detectors (extract pure functions)
+- `npm test` uses Node's built-in test runner over `tests/*.test.js`.
+- **Unit tests** cover provider-neutral face features, gesture state machines,
+  camera resource policy, telemetry, and mesh rendering without a camera.
+- `tests/gesture-lab.test.js` requires every documented rehearsal to emit its
+  exact lifecycle and verifies explicit monotonic clocks.
+- **Signal processing tests** should extract pure functions from detectors rather
+  than mocking MediaPipe.
 - **Integration tests** use replay tool with reference clips
-- `npm test` runs unit tests; `npm run test:integration` runs replay comparisons
+- A future `npm run test:integration` should run replay comparisons once the
+  capture/replay tools and checked-in signal references exist.
+
+### Gesture release matrix
+
+For every recognizer change:
+
+1. Positive lifecycle completes with ordinary input.
+2. Sub-threshold evidence remains idle.
+3. Incomplete cycles do not emit `complete`.
+4. Held evidence does not repeat `start`.
+5. Refractory windows suppress immediate re-entry.
+6. Missing/low-confidence/stale input releases to null.
+7. NaN and malformed fields remain finite and non-throwing.
+8. Gesture Lab rehearsal reports pass.
+9. Live camera script in `FACE_GESTURE_LAB.md` passes.
+10. Psychodeli `npm run test:face-sync` confirms shared byte parity.
 
 ## Data Storage
 

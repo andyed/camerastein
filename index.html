@@ -20,6 +20,7 @@
         <span id="mode-indicator"></span>
         <span id="error-display"></span>
         <span id="fps-display">-- fps</span>
+        <button id="gesture-lab-toggle" aria-expanded="false" aria-controls="gesture-lab-panel">gestures</button>
         <button id="benchmark-toggle">bench</button>
     </div>
 
@@ -36,6 +37,9 @@
 
     <!-- Benchmark panel -->
     <div id="benchmark-panel" class="collapsed"></div>
+
+    <!-- Face gesture recognizer workbench -->
+    <aside id="gesture-lab-panel" class="collapsed" aria-label="Face gesture recognizer lab"></aside>
 
     <!-- Detection library (copied verbatim from psychodeli-webgl-port) -->
     <script src="js/lib/motion-bus.js"></script>

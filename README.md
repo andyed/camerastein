@@ -7,6 +7,7 @@ Camera body signal detection platform — head, body, and hands via MediaPipe.
 Camerastein is a testbed for the MediaPipe motion detection system used in [Psychodeli+](https://psychodeli.com) (closed source). It extracts the detection, signal processing, and event bus architecture into a standalone web app for:
 
 - **Iterating on motion representations** — stick figure rendering, signal sparklines, landmark visualization
+- **Testing face gesture recognizers** — live feature/phase inspection plus isolated deterministic rehearsals for mouth, brow, lean, nod, shake, and scream
 - **Performance benchmarking** — model load times, per-frame detection latency (P50/P95/P99), memory usage
 - **Encouraging extension** — gaze tracking, facial expression analysis, gesture vocabularies, or whatever you want to wire into the MotionBus
 
@@ -18,6 +19,10 @@ npm start
 ```
 
 No build step. No bundler. Just an HTTP server.
+
+For provider-neutral face features and the Gesture Lab, open
+`http://localhost:8081/?tasks-vision`, enable **Head**, then click
+**gestures**. Every recognizer also has a camera-free **rehearse** action.
 
 ## What It Does
 
@@ -93,7 +98,9 @@ js/lib/           # Detection library (shared with Psychodeli+)
 
 js/               # Camerastein app
   init.js                 # DI wiring with no-op stubs
+  init-tasks-vision.js    # Tasks Vision + FaceFeatures/FaceGestures wiring
   app.js                  # Main entry, component wiring
+  gesture-lab.js          # Live recognizer inspector + deterministic rehearsals
   skeleton-renderer.js    # Canvas 2D stick figures
   timeline-panel.js       # Sparkline signal history
   controls-ui.js          # Detection toggles, camera picker
@@ -122,6 +129,16 @@ window.MotionBus.subscribe('faceLandmarks', (frame) => {
     if (!frame) return; // null means no face is currently detected
     const { landmarks, allFaces, topology, imageSize, source, t } = frame;
     // topology.tessellation, topology.contours, topology.lips, ...
+});
+
+// Tasks Vision only: provider-neutral semantic evidence and gesture lifecycles.
+window.MotionBus.subscribe('faceFeatures', (features) => {
+    // expression.jawOpen, browRaiseL/R; pose.pitch/yaw/proximity; dynamics...
+});
+
+window.MotionBus.subscribe('faceGestures', (gestures) => {
+    // tracks.mouth/brow/leanIn/leanOut; cycles.nod/shake;
+    // compound.scream; edge events[] with stable lifecycle phases
 });
 
 // Poll current state
@@ -164,6 +181,8 @@ Changes flow upstream: improvements made here get merged back into Psychodeli+.
 
 - [Related Projects & Libraries](docs/RELATED_PROJECTS.md) — open source projects, UX patterns, and platform adoption of camera-based input
 - [Testing Plan](docs/TESTING_PLAN.md) — video replay testing, signal comparison, benchmark regression
+- [Face Gesture Contract](docs/FACE_GESTURE_CONTRACT.md) — shared provider-neutral lifecycle API and current tuning
+- [Face Gesture Lab](docs/FACE_GESTURE_LAB.md) — operator guide, live test script, failure triage, and extension checklist
 
 ## License
 

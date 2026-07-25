@@ -9,6 +9,7 @@ import { SkeletonRenderer } from './skeleton-renderer.js';
 import { TimelinePanel } from './timeline-panel.js';
 import { ControlsUI } from './controls-ui.js';
 import { BenchmarkHarness } from './benchmark-harness.js';
+import { GestureLab } from './gesture-lab.js';
 
 // Wait for DOM
 document.addEventListener('DOMContentLoaded', () => {
@@ -29,6 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const timeline = new TimelinePanel(document.getElementById('timeline-canvas'));
     const controls = new ControlsUI();
     const benchmark = new BenchmarkHarness(document.getElementById('benchmark-panel'));
+    const gestureLab = new GestureLab();
 
     // SharedCameraManager's adaptive inference budget consumes this optional
     // host signal. Do not replace a product host's own renderer metric.
