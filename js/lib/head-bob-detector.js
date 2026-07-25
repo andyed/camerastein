@@ -287,6 +287,7 @@ class HeadBobDetector {
             this.state.bobFrequency = 0;
             this.state.bobAmplitude = 0;
             this.state.bobPhase = 0;
+            this._prevBobPulsePhase = null;
             this.state.beatSyncScore = 0;
             this.state.isEngaged = false;
             this.state.userRhythmPhase = 0;
@@ -428,6 +429,7 @@ class HeadBobDetector {
             this.state.bobFrequency = 0;
             this.state.bobAmplitude = 0;
             this.state.bobPhase = 0;
+            this._prevBobPulsePhase = null;
             this.state.beatSyncScore = 0;
             this.state.confidence = 0;
             this.state.userRhythmPhase = 0;
@@ -1057,6 +1059,28 @@ class HeadBobDetector {
     _emitMotionPulses(now) {
         if (!this._dep('pulseCollector')) return;
         if (!this._lastMotionPulseTime) this._lastMotionPulseTime = 0;
+
+        // ── Bob PEAK pulse — one per bob cycle, at the bob's own tempo ──
+        // The velocity-spike pulses below fire on any frame above threshold and
+        // are rate-limited to an 80ms cooldown, so a sustained movement emits a
+        // ~12Hz BURST. Downstream regularity/beat-sync analysis reads inter-pulse
+        // timing, and a burst at the cooldown rate can never align to a musical
+        // beat: a head-bobber registered as "active" but never as "rhythmic".
+        //
+        // A peak-triggered pulse instead emits ONE event per bob, producing a
+        // train at the actual bob tempo — which is what regularity and beat-sync
+        // were built to consume. Detected as a phase wrap, matching how the
+        // renderer's ripple echo already finds bob peaks. Placed before the
+        // cooldown gate: bobs are hundreds of ms apart and must never be
+        // swallowed by an unrelated velocity spike's cooldown.
+        const bobPhase = this.state.bobPhase || 0;
+        const prevBobPhase = this._prevBobPulsePhase ?? bobPhase;
+        this._prevBobPulsePhase = bobPhase;
+        if (this.state.isEngaged && prevBobPhase > 0.7 && bobPhase < 0.3) {
+            this._dep('pulseCollector').recordPulse('camera', 'head-bob');
+            this._lastMotionPulseTime = now;
+            return;   // the peak IS this frame's motion event
+        }
 
         // 80ms cooldown — fast enough to catch beats, slow enough to avoid flood
         if (now - this._lastMotionPulseTime < 80) return;
