@@ -27,6 +27,7 @@ const CYCLE_CONFIG = Object.freeze({
     nod: {
         enter: 0.12,
         enterVel: 0.18,
+        armMs: 300,
         reverseVel: 0.10,
         returnBand: 0.045,
         maxMs: 1100,
@@ -36,6 +37,7 @@ const CYCLE_CONFIG = Object.freeze({
         enter: 0.12,
         opposite: 0.10,
         enterVel: 0.18,
+        armMs: 300,
         reverseVel: 0.10,
         maxMs: 1250,
         refractoryMs: 500,
@@ -126,6 +128,10 @@ export class FaceGestureRecognizer {
         };
         this._cycles = { nod: makeCycle(), shake: makeCycle() };
         this._neutral = { pitch: null, yaw: null };
+        this._armed = {
+            pitch: { t: -Infinity, dir: 0 },
+            yaw: { t: -Infinity, dir: 0 },
+        };
         this._refractoryUntil = { nod: 0, shake: 0, scream: 0 };
         this._scream = {
             active: false,
@@ -234,6 +240,46 @@ export class FaceGestureRecognizer {
         Object.assign(this._cycles[name], makeCycle(), { episodeId });
     }
 
+    /**
+     * Cycle entry evidence, decoupled in time.
+     *
+     * `velocity` arrives EMA-smoothed from the feature channel, so it LAGS the
+     * excursion it belongs to. Requiring threshold excursion AND threshold
+     * velocity AND a matching sign in the SAME frame therefore inverted the
+     * intent: on a decisive nod the head has already reversed by the time the
+     * smoothed velocity peaks, leaving a coincidence window one or two frames
+     * wide that real sampling rates routinely skip — while a languid nod, whose
+     * velocity has several time constants to settle, passed every time.
+     *
+     * Arming keeps both thresholds exactly as documented and relaxes only their
+     * coincidence: a velocity onset arms the axis for `armMs`, and the cycle
+     * starts when the excursion threshold is met while that arming is still
+     * fresh and points the same way. Same-frame coincidence still qualifies, so
+     * every gesture that entered before continues to enter.
+     */
+    _cycleArmed(key, rel, velocity, cfg, t) {
+        const arm = this._armed[key];
+        const heading = sign(rel);
+        const fast = Math.abs(velocity) >= cfg.enterVel;
+        // Decide from evidence that existed BEFORE this frame's onset is
+        // recorded. The reversal that ends an outbound leg is itself fast, and
+        // recording it first would overwrite the very arming it is completing.
+        const entering = Math.abs(rel) >= cfg.enter
+            && ((fast && sign(velocity) === heading)
+                || (arm.dir === heading && (t - arm.t) <= cfg.armMs));
+        if (fast) {
+            arm.t = t;
+            arm.dir = sign(velocity);
+        }
+        return entering;
+    }
+
+    /** Spend the arming so one onset cannot seed a second cycle. */
+    _disarm(key) {
+        this._armed[key].t = -Infinity;
+        this._armed[key].dir = 0;
+    }
+
     _updateNod(pitch, velocity, t, events) {
         this._updateNeutral('pitch', pitch, velocity, t);
         const neutral = this._neutral.pitch ?? pitch;
@@ -243,9 +289,8 @@ export class FaceGestureRecognizer {
 
         if (!c.active) {
             if (t < this._refractoryUntil.nod
-                || Math.abs(rel) < cfg.enter
-                || Math.abs(velocity) < cfg.enterVel
-                || sign(velocity) !== sign(rel)) return;
+                || !this._cycleArmed('pitch', rel, velocity, cfg, t)) return;
+            this._disarm('pitch');
             c.active = true;
             c.phase = 'outbound';
             c.episodeId = this._nextEpisodeId++;
@@ -293,9 +338,8 @@ export class FaceGestureRecognizer {
 
         if (!c.active) {
             if (t < this._refractoryUntil.shake
-                || Math.abs(rel) < cfg.enter
-                || Math.abs(velocity) < cfg.enterVel
-                || sign(velocity) !== sign(rel)) return;
+                || !this._cycleArmed('yaw', rel, velocity, cfg, t)) return;
+            this._disarm('yaw');
             c.active = true;
             c.phase = 'outbound';
             c.episodeId = this._nextEpisodeId++;

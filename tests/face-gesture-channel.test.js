@@ -209,6 +209,80 @@ test('shared recognizer completes a nod after reversal and neutral return', () =
     })), 'nod'), ['complete']);
 });
 
+test('a decisive nod enters even though its smoothed velocity already reversed', () => {
+    // Regression: velocity arrives EMA-smoothed (velTau ~0.15s), so on a fast
+    // nod the head is already coming back by the time the excursion clears its
+    // threshold. Demanding excursion and velocity in the SAME frame rejected
+    // exactly the most deliberate gestures — "you have to nod very slow".
+    const r = new FaceGestureRecognizer();
+    r.update(features(0));
+    // Velocity onset arms the axis while the excursion is still small.
+    assert.deepEqual(phases(r.update(features(33, {
+        pose: { pitch: 0.05 },
+        dynamics: { pitchVel: 0.9 },
+    })), 'nod'), []);
+    // Excursion arrives one frame later; the lagged velocity has flipped sign.
+    assert.deepEqual(phases(r.update(features(66, {
+        pose: { pitch: 0.18 },
+        dynamics: { pitchVel: -0.2 },
+    })), 'nod'), ['start']);
+    assert.deepEqual(phases(r.update(features(120, {
+        pose: { pitch: 0.10 },
+        dynamics: { pitchVel: -0.6 },
+    })), 'nod'), ['peak']);
+    assert.deepEqual(phases(r.update(features(180, {
+        pose: { pitch: 0.0 },
+        dynamics: { pitchVel: -0.3 },
+    })), 'nod'), ['complete']);
+});
+
+test('a stale velocity onset cannot arm a later drift into a cycle', () => {
+    const r = new FaceGestureRecognizer();
+    r.update(features(0));
+    r.update(features(33, { pose: { pitch: 0.05 }, dynamics: { pitchVel: 0.9 } }));
+    // Excursion appears long after the onset expired, carried by slow drift.
+    assert.deepEqual(phases(r.update(features(600, {
+        pose: { pitch: 0.20 },
+        dynamics: { pitchVel: 0.02 },
+    })), 'nod'), []);
+});
+
+test('arming is spent on entry, so a timed-out cycle cannot restart itself', () => {
+    const r = new FaceGestureRecognizer();
+    r.update(features(0));
+    r.update(features(33, { pose: { pitch: 0.05 }, dynamics: { pitchVel: 0.9 } }));
+    assert.deepEqual(phases(r.update(features(66, {
+        pose: { pitch: 0.18 },
+        dynamics: { pitchVel: -0.2 },
+    })), 'nod'), ['start']);
+    // Hold the excursion, never reverse: the cycle must time out (maxMs 1100).
+    r.update(features(400, { pose: { pitch: 0.20 }, dynamics: { pitchVel: 0.02 } }));
+    r.update(features(800, { pose: { pitch: 0.20 }, dynamics: { pitchVel: 0.02 } }));
+    const timedOut = r.update(features(1200, {
+        pose: { pitch: 0.20 },
+        dynamics: { pitchVel: 0.02 },
+    }));
+    assert.equal(timedOut.cycles.nod.active, false);
+    // A held pose with no fresh onset must not re-enter on the spent arming.
+    assert.deepEqual(phases(r.update(features(1250, {
+        pose: { pitch: 0.20 },
+        dynamics: { pitchVel: 0.02 },
+    })), 'nod'), []);
+});
+
+test('a decisive shake enters on a lagged-velocity reversal too', () => {
+    const r = new FaceGestureRecognizer();
+    r.update(features(0));
+    assert.deepEqual(phases(r.update(features(33, {
+        pose: { yaw: 0.05 },
+        dynamics: { yawVel: 0.9 },
+    })), 'shake'), []);
+    assert.deepEqual(phases(r.update(features(66, {
+        pose: { yaw: 0.18 },
+        dynamics: { yawVel: -0.2 },
+    })), 'shake'), ['start']);
+});
+
 test('nod does not complete without neutral return and respects refractory time', () => {
     const r = new FaceGestureRecognizer();
     r.update(features(0));

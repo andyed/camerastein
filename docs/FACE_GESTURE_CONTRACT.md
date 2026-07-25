@@ -128,9 +128,32 @@ above remain intact.
 | Mouth | jaw `0.35` | jaw `0.20` | none |
 | Brow | max brow `0.40` | max brow `0.25` | none |
 | Lean in/out | signed proximity `0.35` | signed proximity `0.15` | none |
-| Nod | pitch excursion `0.12`, velocity `0.18` | reversal `0.10`, neutral band `0.045` | `1100 ms` max, `350 ms` refractory |
-| Shake | yaw excursion `0.12`, velocity `0.18` | reversal `0.10`, opposite lobe `0.10` | `1250 ms` max, `500 ms` refractory |
+| Nod | pitch excursion `0.12`, velocity `0.18`, arm `300 ms` | reversal `0.10`, neutral band `0.045` | `1100 ms` max, `350 ms` refractory |
+| Shake | yaw excursion `0.12`, velocity `0.18`, arm `300 ms` | reversal `0.10`, opposite lobe `0.10` | `1250 ms` max, `500 ms` refractory |
 | Scream | jaw `0.65` + brow `0.45` | jaw `<0.35` or brow `<0.25` | `700 ms` refractory |
+
+### Cycle arming (why excursion and velocity need not coincide)
+
+Feature velocity is EMA-smoothed (`velTau` ≈ `0.15 s`), so it lags the excursion
+it describes. Requiring threshold excursion **and** threshold velocity **and** a
+matching sign within one frame therefore inverted the intent: a decisive nod has
+already reversed by the time its smoothed velocity peaks, leaving a coincidence
+window one or two frames wide that real sampling rates skip — while a languid
+nod, whose velocity has several time constants to settle, entered every time.
+The observable symptom was "you have to nod very slowly".
+
+Cycles are therefore armed rather than gated instantaneously. A velocity onset
+arms its axis for `armMs`; the cycle starts when the excursion threshold is met
+while that arming is still fresh and points the same way. Same-frame coincidence
+still qualifies, so every gesture that entered before continues to enter.
+
+Two properties are part of the contract, not tuning:
+
+- Arming is evaluated **before** the current frame's onset is recorded, so the
+  fast reversal that ends an outbound leg cannot overwrite the arming it is
+  completing.
+- Arming is **spent on entry**, so one onset cannot seed a second cycle and a
+  timed-out cycle cannot restart itself from a held pose.
 
 Track peak detection uses a `0.12` velocity epsilon (lean uses `0.10`).
 Pose neutral drifts with a `2400 ms` time constant only while the corresponding
