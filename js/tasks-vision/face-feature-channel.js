@@ -55,6 +55,10 @@ const LM = {
     CHIN: 152,
     LEFT_EAR: 234,
     RIGHT_EAR: 454,
+    MOUTH_UPPER: 13,
+    MOUTH_LOWER: 14,
+    MOUTH_LEFT: 61,
+    MOUTH_RIGHT: 291,
 };
 
 /**
@@ -84,7 +88,7 @@ function _canonFromParts(shapesLike, lms, provider, t, faceCount) {
     // (_updateHeadOrientation, head-bob-detector.js:655) with its DEFAULT gains
     // (yaw 2.2 / pitch 1.0 / roll 1.0) so both channels tell one story about
     // where the head points. Missing/NaN landmarks → pose stays null-safe zero.
-    let yaw = 0, pitch = 0, roll = 0, faceScale = 0, geomOk = false;
+    let yaw = 0, pitch = 0, roll = 0, faceScale = 0, geomOk = false, valenceGeom = 0;
     let cx = 0, cy = 0;   // nose-tip centroid — identity anchor for FaceTrackSet
     if (Array.isArray(lms) && lms.length > LM.RIGHT_EAR) {
         const nose = lms[LM.NOSE_TIP], le = lms[LM.LEFT_EAR], re = lms[LM.RIGHT_EAR];
@@ -104,6 +108,23 @@ function _canonFromParts(shapesLike, lms, provider, t, faceCount) {
                 cy = clamp01(num(nose.y));    // _findOrCreateFaceState matching
                 geomOk = true;
             }
+
+            // Corner-vs-midline valence, same construction and ×8 scaling as the
+            // shipped mouth-tracking detector. It exists because the mouthFrown
+            // BLENDSHAPE is the weak half of the smile/frown pair: a frown that
+            // this geometry reads clearly can leave mouthFrown near zero, which
+            // is why the blendshape-only valence could not fire a frown episode
+            // while the legacy geometry detector could. Positive = corners above
+            // the lip midline = smile. Null-safe: missing points leave it 0.
+            const upper = lms[LM.MOUTH_UPPER], lower = lms[LM.MOUTH_LOWER];
+            const cornerL = lms[LM.MOUTH_LEFT], cornerR = lms[LM.MOUTH_RIGHT];
+            if (finitePt(upper) && finitePt(lower) && finitePt(cornerL)
+                && finitePt(cornerR) && finitePt(nose) && finitePt(chin)) {
+                const lipMidY = (upper.y + lower.y) / 2;
+                const avgCornerY = (cornerL.y + cornerR.y) / 2;
+                const faceHeight = Math.abs(chin.y - nose.y) || 0.1;
+                valenceGeom = clamp11(((lipMidY - avgCornerY) / faceHeight) * 8);
+            }
         }
     }
 
@@ -119,6 +140,7 @@ function _canonFromParts(shapesLike, lms, provider, t, faceCount) {
         bsCount,   // how many blendshape weights actually arrived (0 = geometry-only frame)
         yaw, pitch, roll,
         faceScale,
+        valenceGeom,   // additive (contract §7): corner-geometry valence, 0 when landmarks absent
         cx, cy,    // additive (contract §7): normalized nose-tip centroid, 0/0 when geometry absent
         faceCount: (faceCount == null) ? (geomOk ? 1 : 0) : Math.max(0, Math.floor(num(faceCount))),
     };
@@ -345,7 +367,17 @@ export class FaceFeatureExtractor {
         const jawOpen = g('jawOpen');
         const smile = (g('mouthSmileLeft') + g('mouthSmileRight')) / 2;
         const frown = (g('mouthFrownLeft') + g('mouthFrownRight')) / 2;
-        const valenceRaw = clamp11(smile - frown);
+        // Asymmetric fusion, NEGATIVE HALF ONLY. mouthSmile is a strong, well
+        // behaved blendshape; mouthFrown is not, and a frown the corner geometry
+        // reads clearly can leave the blendshape pair near zero — which is why a
+        // frown episode could never enter while the shipped geometry detector
+        // (head-bob-detector-mouth-tracking.js) fired on the same face. Take the
+        // stronger frown evidence of the two, and leave the smile half untouched
+        // so positive-valence behavior is bit-identical. Geometry absent → 0 →
+        // no-op, so blendshape-only providers degrade to the previous behavior.
+        let valenceRaw = clamp11(smile - frown);
+        const vGeom = clamp11(num(f.valenceGeom));
+        if (vGeom < 0 && vGeom < valenceRaw) valenceRaw = vGeom;
         const mouthWidth = clamp01((g('mouthStretchLeft') + g('mouthStretchRight')) / 2);
         const lipPurse = Math.max(g('mouthPucker'), g('mouthFunnel'));
         const browRaiseL = clamp01((g('browInnerUp') + g('browOuterUpLeft')) / 2);
