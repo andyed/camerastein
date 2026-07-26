@@ -1,3 +1,7 @@
+:root {
+    --project-footer-height: calc(48px + env(safe-area-inset-bottom, 0px));
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
@@ -130,13 +134,74 @@ body {
     height: 100%;
 }
 
+/* ── Project provenance (persistent across every mode) ── */
+#project-footer {
+    height: var(--project-footer-height);
+    padding: 0 16px env(safe-area-inset-bottom, 0px);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 101;
+    background: rgba(20, 20, 30, 0.98);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.project-provenance {
+    color: #c9c9d4;
+    font-size: 16px;
+}
+
+#github-project-link {
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    color: #e9fffd;
+    background: rgba(78, 205, 196, 0.11);
+    border: 1px solid rgba(78, 205, 196, 0.62);
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 650;
+    line-height: 1;
+    text-decoration: none;
+    transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+#github-project-link svg {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    fill: currentColor;
+}
+
+#github-project-link:hover {
+    color: #ffffff;
+    background: rgba(78, 205, 196, 0.2);
+    border-color: #4ecdc4;
+}
+
+#github-project-link:focus-visible {
+    outline: 3px solid #ffe66d;
+    outline-offset: -3px;
+}
+
+.external-link-mark {
+    color: #72e5dc;
+    font-weight: 700;
+}
+
 /* ── Benchmark panel (right, collapsible) ── */
 #benchmark-panel {
     position: fixed;
     top: 50px;
     right: 0;
     width: 280px;
-    max-height: calc(100vh - 180px);
+    max-height: calc(100vh - 180px - var(--project-footer-height));
     background: rgba(15, 15, 25, 0.95);
     border-left: 1px solid rgba(255, 255, 255, 0.08);
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -208,7 +273,7 @@ body {
     top: 49px;
     left: 0;
     width: min(390px, 100vw);
-    max-height: calc(100vh - 169px);
+    max-height: calc(100vh - 169px - var(--project-footer-height));
     padding: 16px;
     overflow-y: auto;
     z-index: 92;
@@ -514,7 +579,20 @@ body {
 
     #gesture-lab-panel {
         top: 47px;
-        max-height: calc(100vh - 167px);
+        max-height: calc(100vh - 167px - var(--project-footer-height));
+    }
+
+    #project-footer {
+        padding-inline: 8px;
+        justify-content: center;
+    }
+
+    .project-provenance {
+        display: none;
+    }
+
+    #github-project-link {
+        width: 100%;
     }
 
     .gesture-cards {
