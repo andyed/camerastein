@@ -599,3 +599,589 @@ body {
         grid-template-columns: 1fr;
     }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   Hand gesture lab — the hand-side parallel to the face Gesture Lab
+
+   Palette is contrast-checked against this panel's own worst case: a card
+   surface (rgba(255,255,255,0.035)) over the strongest point of the purple
+   radial gradient, i.e. #282244. Every readable colour below clears the
+   project's 8:1 floor there, so it clears it everywhere else in the panel:
+     #e8e6f2 12.14:1   #dad6e8 10.53:1   #d2cee2 9.74:1
+     #a5f3ef 11.88:1   #7cf5c4 11.21:1   #ffc2c9  9.85:1   #fcd9a0 11.10:1
+   Chip, meter and log surfaces are darkened rather than tinted, which only
+   raises those ratios.
+   ───────────────────────────────────────────────────────────── */
+
+#hand-lab-toggle {
+    padding: 4px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.05);
+    color: #d2cee2;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+#hand-lab-toggle:hover,
+#hand-lab-toggle.active {
+    border-color: rgba(124, 246, 196, 0.75);
+    background: rgba(60, 180, 140, 0.22);
+    color: #7cf5c4;
+}
+
+#hand-lab-panel {
+    position: fixed;
+    top: 49px;
+    right: 0;
+    width: min(400px, 100vw);
+    max-height: calc(100vh - 169px - var(--project-footer-height));
+    padding: 16px;
+    overflow-y: auto;
+    z-index: 92;
+    color: #dad6e8;
+    background:
+        radial-gradient(circle at 100% 0, rgba(124, 92, 246, 0.18), transparent 45%),
+        rgba(12, 12, 21, 0.96);
+    border-left: 1px solid rgba(167, 139, 250, 0.28);
+    border-bottom: 1px solid rgba(167, 139, 250, 0.2);
+    border-radius: 0 0 0 12px;
+    box-shadow: -18px 24px 60px rgba(0, 0, 0, 0.42);
+    font-size: 12px;
+    transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+#hand-lab-panel.collapsed {
+    pointer-events: none;
+    opacity: 0;
+    transform: translateX(101%);
+}
+
+.hlab-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.hlab-header h2 {
+    margin: 2px 0 0;
+    color: #e8e6f2;
+    font-size: 15px;
+    font-weight: 600;
+}
+
+.hlab-kicker {
+    color: #d2cee2;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.hlab-close {
+    border: 0;
+    background: none;
+    color: #d2cee2;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.hlab-intro {
+    margin: 10px 0 12px;
+    color: #d2cee2;
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.hlab-intro strong { color: #e8e6f2; }
+
+.hlab-source {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px 10px;
+    margin: 0 0 10px;
+    padding: 9px 10px;
+    list-style: none;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.28);
+}
+
+.hlab-source li {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.hlab-source span {
+    color: #d2cee2;
+    font-size: 10px;
+}
+
+.hlab-source b {
+    color: #e8e6f2;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.hlab-focus-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 10px;
+}
+
+.hlab-focus {
+    padding: 3px 9px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.3);
+    color: #dad6e8;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.hlab-focus.active {
+    border-color: rgba(124, 246, 196, 0.6);
+    color: #7cf5c4;
+}
+
+.hlab-actions {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+
+.hlab-actions button,
+.hlab-rehearse,
+.hlab-tuning button,
+.hlab-tuning summary {
+    padding: 4px 9px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.3);
+    color: #dad6e8;
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.hlab-actions button:hover,
+.hlab-rehearse:hover,
+.hlab-tuning button:hover,
+.hlab-tuning summary:hover {
+    border-color: rgba(124, 246, 196, 0.6);
+    color: #7cf5c4;
+}
+
+.hlab-cards {
+    display: grid;
+    gap: 8px;
+}
+
+.hlab-card {
+    padding: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.035);
+    transition: border-color 0.12s ease;
+}
+
+.hlab-card.active {
+    border-color: rgba(124, 246, 196, 0.5);
+}
+
+.hlab-card-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.hlab-card-heading strong {
+    color: #e8e6f2;
+    font-size: 13px;
+}
+
+.hlab-family {
+    display: block;
+    margin-top: 1px;
+    color: #d2cee2;
+    font-size: 9px;
+}
+
+.hlab-cue {
+    margin: 7px 0 9px;
+    color: #d2cee2;
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.hlab-detail[hidden] { display: none; }
+
+.hlab-warning {
+    margin: 10px 0;
+    padding: 7px 9px;
+    border: 1px solid rgba(252, 217, 160, 0.4);
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.3);
+    color: #fcd9a0;
+    font-size: 11px;
+    line-height: 1.45;
+}
+
+.hlab-state {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.hlab-phase {
+    color: #d2cee2;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+}
+
+.hlab-phase[data-state="rising"] { color: #fcd9a0; }
+.hlab-phase[data-state="holding"] { color: #7cf5c4; }
+.hlab-phase[data-state="falling"] { color: #ffc2c9; }
+
+.hlab-episode {
+    color: #d2cee2;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 10px;
+}
+
+.hlab-gauge {
+    display: grid;
+    grid-template-columns: 42px 1fr 34px;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 5px;
+}
+
+.hlab-gauge > span {
+    color: #d2cee2;
+    font-size: 10px;
+}
+
+.hlab-gauge > b {
+    color: #e8e6f2;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 11px;
+    font-weight: 600;
+    text-align: right;
+}
+
+.hlab-meter {
+    height: 5px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.45);
+}
+
+.hlab-meter i {
+    display: block;
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #4ecdc4, #a78bfa);
+    transition: width 80ms linear;
+}
+
+.hlab-criteria {
+    margin: 12px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.hlab-criterion {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 44px 50px 46px;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 7px;
+    background: rgba(0, 0, 0, 0.22);
+}
+
+.hlab-criterion + .hlab-criterion { margin-top: 5px; }
+
+.hlab-criterion-name {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    color: #e8e6f2;
+    font-size: 11px;
+}
+
+.hlab-criterion-name em {
+    color: #d2cee2;
+    font-size: 9px;
+    font-style: normal;
+}
+
+.hlab-criterion-value,
+.hlab-criterion-bound {
+    color: #e8e6f2;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 11px;
+    text-align: right;
+}
+
+.hlab-criterion-bound { color: #d2cee2; }
+
+.hlab-chip {
+    padding: 2px 0;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 999px;
+    background: rgba(0, 0, 0, 0.35);
+    color: #d2cee2;
+    font-size: 10px;
+    font-weight: 600;
+    text-align: center;
+}
+
+.hlab-chip[data-state="pass"] {
+    border-color: rgba(124, 245, 196, 0.5);
+    color: #7cf5c4;
+}
+
+.hlab-chip[data-state="fail"] {
+    border-color: rgba(255, 194, 201, 0.5);
+    color: #ffc2c9;
+}
+
+.hlab-diagnostic {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 6px 0 0;
+    padding: 5px 8px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.28);
+    color: #d2cee2;
+    font-size: 10px;
+}
+
+.hlab-diagnostic b {
+    color: #e8e6f2;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 11px;
+}
+
+.hlab-reasons { margin-top: 10px; }
+
+.hlab-reasons > span {
+    color: #d2cee2;
+    font-size: 10px;
+}
+
+.hlab-reasons ol {
+    display: grid;
+    gap: 3px;
+    margin-top: 5px;
+    padding: 0;
+    list-style: none;
+}
+
+.hlab-reasons li {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 3px 8px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.3);
+    color: #dad6e8;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 10px;
+}
+
+.hlab-reasons li b { color: #a5f3ef; }
+
+.hlab-reason-empty { color: #d2cee2; }
+
+.hlab-switch {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    margin-top: 10px;
+    color: #dad6e8;
+    font-size: 10px;
+    line-height: 1.4;
+    cursor: pointer;
+}
+
+.hlab-switch input { accent-color: #4ecdc4; }
+
+.hlab-tuning { margin-top: 12px; }
+
+.hlab-tuning summary {
+    display: inline-block;
+    list-style: none;
+}
+
+.hlab-tuning summary::-webkit-details-marker { display: none; }
+
+.hlab-slider {
+    display: block;
+    margin-top: 9px;
+}
+
+.hlab-slider > span {
+    display: flex;
+    justify-content: space-between;
+    color: #dad6e8;
+    font-size: 10px;
+}
+
+.hlab-slider em {
+    color: #a5f3ef;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-style: normal;
+}
+
+.hlab-slider input {
+    width: 100%;
+    margin-top: 3px;
+    accent-color: #4ecdc4;
+}
+
+.hlab-card code {
+    display: block;
+    margin-top: 9px;
+    overflow: hidden;
+    color: #d2cee2;
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.hlab-events {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.hlab-events-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.hlab-events-heading strong {
+    color: #e8e6f2;
+    font-size: 12px;
+}
+
+.hlab-events-heading span {
+    color: #d2cee2;
+    font-size: 10px;
+}
+
+.hlab-rehearsal-failed .hlab-events-heading span { color: #ffc2c9; }
+
+.hlab-event-log {
+    display: grid;
+    gap: 4px;
+    margin-top: 8px;
+    padding: 0;
+    list-style: none;
+}
+
+.hlab-event-log li {
+    display: grid;
+    grid-template-columns: 40px 56px 42px 36px minmax(0, 1fr);
+    align-items: center;
+    gap: 6px;
+    padding: 4px 7px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.3);
+    color: #dad6e8;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 10px;
+}
+
+.hlab-event-log li[data-source="rehearsal"] {
+    border-left: 2px solid rgba(167, 139, 250, 0.7);
+}
+
+.hlab-event-kind { color: #a5f3ef; }
+.hlab-event-phase[data-state="start"] { color: #7cf5c4; }
+.hlab-event-phase[data-state="peak"] { color: #a5f3ef; }
+.hlab-event-phase[data-state="release"] { color: #ffc2c9; }
+.hlab-event-note { color: #d2cee2; }
+
+/* The empty state is one sentence, not a five-column log row. */
+.hlab-event-empty {
+    grid-template-columns: 1fr !important;
+    color: #d2cee2;
+    font-family: inherit !important;
+}
+
+/* Hand lab HUD — large-type overlay for testing from arm's length.
+   The backdrop is opaque enough (0.94) that every colour clears 8:1 even over a
+   pure-white video frame: worst-case ground is #15151b, giving #e8e6f2 14.76:1,
+   #7cf5c4 13.62:1, #fcd9a0 13.49:1, #ffc2c9 11.97:1. Anchored bottom-LEFT: the
+   lab panel owns the right edge, so the HUD would hide behind it. */
+#hand-lab-hud {
+    position: absolute;
+    left: 16px;
+    bottom: 16px;
+    z-index: 40;
+    display: grid;
+    gap: 7px;
+    width: 218px;
+    padding: 12px 14px;
+    border: 1px solid rgba(167, 139, 250, 0.35);
+    border-radius: 10px;
+    background: rgba(6, 6, 12, 0.94);
+    pointer-events: none;
+}
+
+#hand-lab-hud[hidden] { display: none; }
+
+.hlab-hud-phase {
+    color: #d2cee2;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 26px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    line-height: 1;
+}
+
+.hlab-hud-phase[data-state="rising"] { color: #fcd9a0; }
+.hlab-hud-phase[data-state="holding"] { color: #7cf5c4; }
+.hlab-hud-phase[data-state="falling"] { color: #ffc2c9; }
+
+.hlab-hud-meter {
+    height: 8px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.14);
+}
+
+.hlab-hud-meter i {
+    display: block;
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #4ecdc4, #a78bfa);
+    transition: width 80ms linear;
+}
+
+.hlab-hud-note {
+    color: #e8e6f2;
+    font-size: 13px;
+    line-height: 1.35;
+}
