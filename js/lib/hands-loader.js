@@ -26,8 +26,13 @@ class HandsLoader extends MediaPipeBaseLoader {
             config: {
                 maxNumHands: 2,
                 modelComplexity: isMobile ? 0 : 1,  // 0=lite on mobile, 1=full on desktop
-                minDetectionConfidence: 0.5,
-                minTrackingConfidence: 0.5
+                minDetectionConfidence: window.__handMinDetection ?? 0.5,
+                // Overridable because two-hand poses that occlude each other —
+                // pray, clasped hands — lose tracking at the default gate.
+                // Lowering it holds a hand through ambiguity at the cost of
+                // more false landmarks elsewhere, so the default is unchanged.
+                // Set before enabling Hand mode; the model reads it at load.
+                minTrackingConfidence: window.__handMinTracking ?? 0.5
             }
         });
 
