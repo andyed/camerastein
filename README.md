@@ -8,6 +8,7 @@ Camerastein is a testbed for the MediaPipe motion detection system used in [Psyc
 
 - **Iterating on motion representations** — stick figure rendering, signal sparklines, landmark visualization
 - **Testing face gesture recognizers** — live feature/phase inspection plus isolated deterministic rehearsals for mouth, brow, lean, nod, shake, and scream
+- **Testing hand gesture recognizers** — a Hand Gesture Lab mirroring the face one: nine gestures in two families, per-gesture criteria readouts, a rolling why-it-did-not-fire tally, and a camera-free **rehearse** for each held pose. Eight held poses (`pray`, open palm, fist, point, peace, horns, thumbs up/down) plus the air-drum strike, which is a transient and says so (`docs/HAND_GESTURE_SUITE.md`, pray in detail in `docs/HAND_GESTURE_PRAY.md`, live protocol in `docs/PRAY_TEST_SCRIPT.md`)
 - **Performance benchmarking** — model load times, per-frame detection latency (P50/P95/P99), memory usage
 - **Encouraging extension** — gaze tracking, facial expression analysis, gesture vocabularies, or whatever you want to wire into the MotionBus
 
@@ -32,7 +33,7 @@ Three MediaPipe detectors track your body through a webcam:
 |----------|-------|-------------|
 | **Head** | Face Mesh (468 landmarks) | Head orientation, bob frequency, beat sync, mouth activity, lean detection |
 | **Body** | Pose (33 landmarks) | Sway, bounce, arm spread, torso lean, energy level, gesture recognition |
-| **Hand** | Hands (21 landmarks × 2) | Finger spread, pinch, fist closure, palm facing, two-hand distance |
+| **Hand** | Hands (21 landmarks × 2) | Finger spread, pinch, fist closure, palm facing, two-hand distance, air-drum strikes, a suite of held poses |
 
 All signals flow through **MotionBus** — a subscribe/emit/state event bus. Consumers read `window.MotionBus.state.rhythm`, `.body`, or `.hand`.
 

@@ -58,6 +58,25 @@ Open source projects with permissive licenses relevant to camerastein's developm
 - **Use:** Dead simple frame-averaging: 8 frames, drop 2 highest/lowest, average remaining 4. `smoothLandmarks(results)` API. Good for quick prototyping before implementing One Euro.
 - **Status:** January 2023
 
+### AirControll (palm-local feature construction)
+- **Repo:** https://github.com/argyrios-dev/AirControll
+- **License:** MPL-2.0 (file-level copyleft — reimplement, don't vendor)
+- **Stars:** 0 (created 2026-08-05)
+- **Use:** Swift + Apple Vision menu-bar gesture app. Two parts worth reading.
+  `FeatureExtractor.swift` builds a palm-local frame (center from wrist + four
+  MCPs, scale from palm width and length) and expresses inter-hand distance in
+  **hand-scale units** rather than screen units — the normalization camerastein's
+  `hand-pose-features.js` adopted for the pray recognizer. `GestureRecognizer.swift`
+  is a template learner: record 24+ stable samples, build mean/variance, match by
+  variance-weighted distance against a threshold derived from the training p95,
+  gate with N consecutive frames + cooldown + require-release. No hardcoded
+  gestures anywhere in it.
+- **Limitation:** 2D only. Apple Vision has no usable depth, so it has no
+  palm-normal feature — which is the criterion a two-hand pose like pray turns on.
+  MediaPipe's z makes that available to camerastein and not to them.
+- **Status:** Single-day upload, no commits since creation
+- **See:** `docs/HAND_GESTURE_PRAY.md`
+
 ## Tier 3 — Reference & Inspiration
 
 ### hand-gesture-recognition-mediapipe
