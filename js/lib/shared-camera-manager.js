@@ -13,6 +13,9 @@
  * @see docs/HEAD_BOB_DETECTION.md
  */
 
+const CAMERA_PREFERRED_DEVICE_KEY = 'camera.preferredDeviceId';
+const CAMERA_PREFERRED_EXPLICIT_KEY = 'camera.preferredDeviceExplicit';
+
 // Camera feature flags — which video-tracking modes are available. iOS v1 (the Capacitor
 // native app) ships HEAD-ONLY: hand + body are deferred to keep camera init light and the UX
 // focused. Desktop + web keep all three. Read by togglePermission / setModeDesired so EVERY
@@ -24,7 +27,12 @@ if (typeof window !== 'undefined' && !window.CameraFeatureFlags) {
     const _isNativeApp = !!(_cap && (typeof _cap.isNativePlatform === 'function'
         ? _cap.isNativePlatform()
         : (_cap.platform && _cap.platform !== 'web')));
-    window.CameraFeatureFlags = { head: true, hand: !_isNativeApp, body: !_isNativeApp };
+    const _cameraAvailable = window.Platform?.can?.camera !== false;
+    window.CameraFeatureFlags = {
+        head: _cameraAvailable,
+        hand: _cameraAvailable && !_isNativeApp,
+        body: _cameraAvailable && !_isNativeApp
+    };
 }
 
 class SharedCameraManager {
@@ -34,7 +42,17 @@ class SharedCameraManager {
         this.active = false;
         this.preferredDeviceId = null;
         try {
-            this.preferredDeviceId = localStorage.getItem('camera.preferredDeviceId') || null;
+            const storedId = localStorage.getItem(CAMERA_PREFERRED_DEVICE_KEY) || null;
+            const wasExplicitlySelected = localStorage.getItem(CAMERA_PREFERRED_EXPLICIT_KEY) === '1';
+            this.preferredDeviceId = wasExplicitlySelected ? storedId : null;
+            // Before build 44, _startStream() saved whichever enumerated camera happened
+            // to open first. On iOS that was commonly a rear lens, so it looked like a
+            // deliberate preference and stayed rear-facing forever. Drop that legacy
+            // auto-selection once; future choices made through setPreferredDeviceId()
+            // carry the explicit marker and remain durable.
+            if (storedId && !wasExplicitlySelected) {
+                localStorage.removeItem(CAMERA_PREFERRED_DEVICE_KEY);
+            }
         } catch (_) {
             this.preferredDeviceId = null;
         }
@@ -344,8 +362,13 @@ class SharedCameraManager {
 
         this.preferredDeviceId = nextId;
         try {
-            if (nextId) localStorage.setItem('camera.preferredDeviceId', nextId);
-            else localStorage.removeItem('camera.preferredDeviceId');
+            if (nextId) {
+                localStorage.setItem(CAMERA_PREFERRED_DEVICE_KEY, nextId);
+                localStorage.setItem(CAMERA_PREFERRED_EXPLICIT_KEY, '1');
+            } else {
+                localStorage.removeItem(CAMERA_PREFERRED_DEVICE_KEY);
+                localStorage.removeItem(CAMERA_PREFERRED_EXPLICIT_KEY);
+            }
         } catch (_) { }
 
         if (!this.activeMode) {
@@ -623,6 +646,12 @@ class SharedCameraManager {
         if (!need) return;
         const loaded = () => (need === 'face' ? this.faceMeshLoaded : this.poseLoaded);
         if (loaded()) return;
+        // Parity with _ensureHands()'s toast — this used to fire here too (see the
+        // 2026-06-11 note on initialize() referencing "Loading Face Tracking..."),
+        // but a cold load can take long enough on its own (worse before the vendor
+        // asset caching fix) that its absence reads as a dead camera, not a slow one.
+        this._dep('commandRegistry')?.showParameterIndicator?.(
+            need === 'face' ? 'Loading Face Tracking...' : 'Loading Body Tracking...', true);
         this._lifecycle('model-retry', need);
         await new Promise(r => setTimeout(r, 1500));
         if (need === 'face') {
@@ -739,6 +768,15 @@ class SharedCameraManager {
     }
 
     _isFatalFrameError(error) {
+        // Typed transport errors first. The worker reports stable codes precisely
+        // so this does not have to guess from prose; the substring matching below
+        // remains the inline path's classifier and is untouched.
+        // See js/tasks-vision/worker/protocol.js FATAL_CODES.
+        if (error && typeof error.code === 'string') {
+            if (typeof error.fatal === 'boolean') return error.fatal;
+            return ['PROTOCOL_MISMATCH', 'MODEL_LOAD_FAILED', 'FRAME_TIMEOUT', 'WORKER_CRASHED'].includes(error.code);
+        }
+
         const details = [
             error?.name,
             error?.message,
@@ -792,7 +830,7 @@ class SharedCameraManager {
         // (MediaPipe models share global state, parallel loading causes wrong CDN paths)
         this._dep('debugManager')?.logTransition('camera', 'model-load-facemesh', null, { minIntervalMs: 300 });
         if (!this.faceMeshLoaded && this._dep('commandRegistry')?.showParameterIndicator) {
-            this._dep('commandRegistry').showParameterIndicator('Loading Face Tracking...', true);
+            this._dep('commandRegistry').showParameterIndicator('Loading Face Tracking...', true, window.ToastPolicy?.TRANSPORT);
         }
         this.faceMesh = await this._loadFaceMesh();
         this.faceMeshLoaded = !!this.faceMesh;
@@ -805,7 +843,7 @@ class SharedCameraManager {
         if (!(typeof window !== 'undefined' && window.__PSYDELI_NATIVE_BUILD)) {
             this._dep('debugManager')?.logTransition('camera', 'model-load-pose', null, { minIntervalMs: 300 });
             if (!this.poseLoaded && this._dep('commandRegistry')?.showParameterIndicator) {
-                this._dep('commandRegistry').showParameterIndicator('Loading Body Tracking...', true);
+                this._dep('commandRegistry').showParameterIndicator('Loading Body Tracking...', true, window.ToastPolicy?.TRANSPORT);
             }
             this.pose = await this._loadPose();
             this.poseLoaded = !!this.pose;
@@ -837,18 +875,7 @@ class SharedCameraManager {
             .map(d => d?.deviceId)
             .filter(Boolean);
 
-        const uniqueDeviceIds = [];
-        const seen = new Set();
-        if (this.preferredDeviceId) {
-            uniqueDeviceIds.push(this.preferredDeviceId);
-            seen.add(this.preferredDeviceId);
-        }
-        deviceIds.forEach(id => {
-            if (!seen.has(id)) {
-                seen.add(id);
-                uniqueDeviceIds.push(id);
-            }
-        });
+        const fallbackDeviceIds = deviceIds.filter(id => id !== this.preferredDeviceId);
 
         // Android (esp. Mali GPUs in a Capacitor WebView) shares GPU memory between the camera
         // textures, MediaPipe, and the main WebGL2 visualization context. Cap capture at 320×240
@@ -858,20 +885,35 @@ class SharedCameraManager {
         const _camW = _isAndroid ? 320 : 640, _camH = _isAndroid ? 240 : 480;
 
         const streamAttempts = [];
-        uniqueDeviceIds.forEach(deviceId => {
+        // A device ID is a real preference only when the user picked it in the
+        // camera selector. Preserve that choice, including an intentional rear
+        // camera. With no explicit choice, Familiar is a face interaction, so
+        // request the selfie camera before trying enumeration-order fallbacks.
+        if (this.preferredDeviceId) {
             streamAttempts.push({
                 constraints: {
                     video: {
-                        deviceId: { exact: deviceId },
+                        deviceId: { exact: this.preferredDeviceId },
                         width: { ideal: _camW },
                         height: { ideal: _camH }
                     }
                 },
-                deviceId
+                deviceId: this.preferredDeviceId,
+                explicitPreference: true
             });
-        });
+        }
 
         streamAttempts.push(
+            {
+                constraints: {
+                    video: {
+                        facingMode: { exact: 'user' },
+                        width: { ideal: _camW },
+                        height: { ideal: _camH }
+                    }
+                },
+                deviceId: null
+            },
             {
                 constraints: {
                     video: {
@@ -881,7 +923,24 @@ class SharedCameraManager {
                     }
                 },
                 deviceId: null
-            },
+            }
+        );
+
+        fallbackDeviceIds.forEach(deviceId => {
+            streamAttempts.push({
+                constraints: {
+                    video: {
+                        deviceId: { exact: deviceId },
+                        width: { ideal: _camW },
+                        height: { ideal: _camH }
+                    }
+                },
+                deviceId,
+                explicitPreference: false
+            });
+        });
+
+        streamAttempts.push(
             {
                 constraints: {
                     video: {
@@ -896,7 +955,6 @@ class SharedCameraManager {
 
         let lastError = null;
         let lastNotFound = false;
-        let preferredWasInvalid = false;
 
         for (let i = 0; i < streamAttempts.length; i++) {
             const attempt = streamAttempts[i];
@@ -911,12 +969,31 @@ class SharedCameraManager {
                 this.videoElement.setAttribute('autoplay', '');
                 this.videoElement.setAttribute('playsinline', '');
                 this.videoElement.style.position = 'fixed';
-                this.videoElement.style.left = '-9999px';
-                this.videoElement.style.top = '0';
-                this.videoElement.style.width = '1px';
-                this.videoElement.style.height = '1px';
-                this.videoElement.style.opacity = '0';
+                const nativeIOS = window.__PSYDELI_NATIVE_BUILD === true
+                    && window.__PSYDELI_PLATFORM === 'ios';
+                if (nativeIOS) {
+                    // WKWebView can advance currentTime on a camera video that its
+                    // compositor has stopped painting. Both inline 1.5 and worker
+                    // builds 62/63 then run valid inference calls over black pixels:
+                    // no exception, no drop, and permanently zero faces. Keep the
+                    // native-iOS source in the rendered viewport at negligible size
+                    // and alpha so WebKit continues producing decoded frames for
+                    // both direct inference and the worker's canvas bridge.
+                    this.videoElement.style.left = '0px';
+                    this.videoElement.style.top = '0px';
+                    this.videoElement.style.width = '16px';
+                    this.videoElement.style.height = '12px';
+                    this.videoElement.style.opacity = '0.001';
+                    this.videoElement.style.transform = 'translateZ(0)';
+                } else {
+                    this.videoElement.style.left = '-9999px';
+                    this.videoElement.style.top = '0';
+                    this.videoElement.style.width = '1px';
+                    this.videoElement.style.height = '1px';
+                    this.videoElement.style.opacity = '0';
+                }
                 this.videoElement.style.pointerEvents = 'none';
+                this.videoElement.setAttribute('aria-hidden', 'true');
 
                 if (!this.videoElement.parentNode && document.body) {
                     document.body.appendChild(this.videoElement);
@@ -981,21 +1058,6 @@ class SharedCameraManager {
                     checkReady();
                 });
 
-                if (attempt.deviceId) {
-                    if (this.preferredDeviceId && attempt.deviceId !== this.preferredDeviceId) {
-                        preferredWasInvalid = true;
-                    }
-                    this.preferredDeviceId = attempt.deviceId;
-                    try {
-                        localStorage.setItem('camera.preferredDeviceId', attempt.deviceId);
-                    } catch (_) { }
-                } else if (preferredWasInvalid) {
-                    try {
-                        localStorage.removeItem('camera.preferredDeviceId');
-                    } catch (_) { }
-                    this.preferredDeviceId = null;
-                }
-
                 this._lifecycle('stream-ready', `${this.videoElement.videoWidth}x${this.videoElement.videoHeight} attempt ${i + 1}`);
                 this._dep('debugManager')?.logTransition('camera', 'stream-ready', {
                     width: this.videoElement.videoWidth,
@@ -1055,9 +1117,10 @@ class SharedCameraManager {
                     throw err;
                 }
 
-                if ((isNotFound || isNoFrames || isOverconstrained) && attempt.deviceId && attempt.deviceId === this.preferredDeviceId) {
+                if ((isNotFound || isNoFrames || isMetaTimeout || isOverconstrained) && attempt.explicitPreference) {
                     try {
-                        localStorage.removeItem('camera.preferredDeviceId');
+                        localStorage.removeItem(CAMERA_PREFERRED_DEVICE_KEY);
+                        localStorage.removeItem(CAMERA_PREFERRED_EXPLICIT_KEY);
                     } catch (_) { }
                     this.preferredDeviceId = null;
                 }
@@ -1086,7 +1149,8 @@ class SharedCameraManager {
         if (!this.stream) {
             if (lastNotFound && this.preferredDeviceId) {
                 try {
-                    localStorage.removeItem('camera.preferredDeviceId');
+                    localStorage.removeItem(CAMERA_PREFERRED_DEVICE_KEY);
+                    localStorage.removeItem(CAMERA_PREFERRED_EXPLICIT_KEY);
                 } catch (_) { }
                 this.preferredDeviceId = null;
             }
@@ -1141,16 +1205,47 @@ class SharedCameraManager {
     /**
      * Run one model send, timing it into CameraTrackingStats.
      *
-     * detectForVideo is a synchronous WASM call under the shim, so this wall time IS
-     * the main-thread stall the 60fps renderer pays for tracking. Errors propagate
-     * unchanged — callers own their own catch semantics (hands must not kill primary).
+     * Inline, detectForVideo is a synchronous WASM call under the shim, so this wall
+     * time IS the main-thread stall the 60fps renderer pays for tracking. That stops
+     * being true the moment a transport puts inference on another thread, so the
+     * stopwatch here is reported as roundTripMs and the shim's own structured
+     * outcome supplies the breakdown. See docs/MEDIAPIPE_WORKER_EXECUTION_SPEC.md § 11.
+     *
+     * Errors propagate unchanged — callers own their own catch semantics (hands must
+     * not kill primary). A throwing send is still recorded, as a dropped frame.
      */
     async _timedSend(channel, model, frameSource) {
         const t0 = performance.now();
+        let outcome = null;
+        let threw = false;
         try {
-            await model.send({ image: frameSource });
+            outcome = await model.send({ image: frameSource });
+        } catch (e) {
+            threw = true;
+            throw e;
         } finally {
-            this._trackingStats?.record?.(channel, performance.now() - t0);
+            const roundTripMs = performance.now() - t0;
+            if (threw) {
+                this._trackingStats?.record?.(channel, {
+                    channel, transport: 'inline', completed: false,
+                    dropped: true, dropReason: 'inference-error',
+                });
+            } else if (outcome && typeof outcome === 'object') {
+                // mainThreadMs: inline, the whole await is synchronous main-thread work.
+                // A worker transport reports its own and this fallback does not apply.
+                this._trackingStats?.record?.(channel, {
+                    ...outcome,
+                    channel,
+                    roundTripMs,
+                    mainThreadMs: Number.isFinite(outcome.mainThreadMs)
+                        ? outcome.mainThreadMs
+                        : (outcome.transport === 'worker' ? undefined : roundTripMs),
+                });
+            } else {
+                // Legacy model with no structured outcome — a bare stopwatch still
+                // reads correctly for an inline synchronous send.
+                this._trackingStats?.record?.(channel, roundTripMs);
+            }
         }
     }
 
@@ -1186,7 +1281,12 @@ class SharedCameraManager {
             constrained: this._resourceConstrained,
             planned,
             achieved: this._trackingStats?.summary?.() || null,
+            // Main-thread cost only. Inline this is unchanged; behind a worker it no
+            // longer silently absorbs round-trip wait. See the stats module header.
             loadMsPerSec: this._trackingStats?.loadMsPerSec?.() || null,
+            // Transport-aware breakdown — the view to read when comparing an inline
+            // baseline against a worker run.
+            transport: this._trackingStats?.detail?.() || null,
         };
     }
 
@@ -1299,6 +1399,61 @@ class SharedCameraManager {
     // ------------------------------------------------------------------
 
     /**
+     * How much main thread can the periodic body probe afford right now?
+     *
+     * THE PROBLEM. A probe window suspends interleave and forces `primarySlot`,
+     * so pose claims EVERY paced tick for its whole duration while face runs not
+     * at all. That is fine when pose inference is sub-frame. It is not fine on the
+     * CPU delegate: at ~50ms per inference and ~10 ticks in a 500ms window, the
+     * probe blocks the main thread for essentially the entire window — the
+     * animation stops dead for half a second, every three seconds, in ordinary
+     * head tracking. Andy, 2026-08-07: "the jank freezes the running animation, so
+     * feels broken." The visualization is the product; a convenience feature must
+     * not be allowed to freeze it.
+     *
+     * THE POLICY. Scale the probe to the measured cost of a pose inference rather
+     * than assuming it is cheap:
+     *   - no samples yet   → allow. The first probe is how we learn the cost.
+     *   - cheap            → today's behaviour exactly, unchanged.
+     *   - expensive        → shrink to the minimum tick count the velocity math
+     *                        needs, and stretch the interval to hold the duty cycle.
+     *   - unaffordable     → skip. Arm-wave auto-switch is a convenience; the
+     *                        low-confidence switch path still works, and a worker
+     *                        transport would make the probe affordable again.
+     *
+     * Reads main-thread cost, NOT round trip, so a worker transport correctly reads
+     * as cheap even when its inference is slow — which is the whole point of it.
+     */
+    _bodyProbeBudget(requestedWindowMs) {
+        const OFF = (typeof window !== 'undefined' && window.__bodyProbeCostGate === false);
+        const base = { affordable: true, windowMs: requestedWindowMs, intervalMs: this.autoSwitchConfig.bodyProbeIntervalMs, costMs: null, reason: null };
+        if (OFF) return { ...base, reason: 'gate-disabled' };
+
+        const costMs = this._trackingStats?.mainThreadP50?.('pose');
+        if (!Number.isFinite(costMs) || costMs <= 0) return { ...base, reason: 'no-samples' };
+        base.costMs = costMs;
+
+        // A frame is ~16.7ms. Sub-frame pose is cheap enough to leave alone; past
+        // ~1.5 frames a single inference is a visible hitch on its own, and no
+        // amount of scheduling makes a burst of them acceptable.
+        const CHEAP_MS = 12;
+        const UNAFFORDABLE_MS = 25;
+        const MIN_TICKS = 3;        // velocity math needs consecutive frames (dt ~50ms)
+
+        if (costMs <= CHEAP_MS) return { ...base, reason: 'cheap' };
+        if (costMs > UNAFFORDABLE_MS) {
+            return { ...base, affordable: false, reason: 'pose-too-expensive' };
+        }
+
+        // In between: run the shortest probe the velocity math accepts. Worst case
+        // is MIN_TICKS × UNAFFORDABLE_MS = 75ms against the 3s interval — a 2.5%
+        // duty cycle, so the interval itself needs no adjustment. If MIN_TICKS or
+        // the affordability cap ever rise, re-derive that before trusting it.
+        const tickMs = 1000 / Math.max(1, this.targetFPS);
+        return { ...base, windowMs: MIN_TICKS * tickMs, reason: 'throttled' };
+    }
+
+    /**
      * Begin a probing window: route pose results to the body detector so its
      * state populates, auto-revert after the window if nothing significant.
      * Prevents shoulder micro-movements from stealing the camera while seated.
@@ -1310,7 +1465,25 @@ class SharedCameraManager {
         if (!this.permissions.head || !this.permissions.body) return;
         if (this.phase !== 'running' || this.activeMode !== 'head') return;
         if (!this.poseLoaded || !this.pose) return;
-        const probeTimeout = windowMs || (isAutoSwitch ? 500 : 1000);
+
+        // Cost gate applies to the PERIODIC peek only. A confidence-triggered probe
+        // is answering "has the user left the frame", which is worth a hitch; the
+        // periodic one is speculative and must not freeze the visualization.
+        let probeTimeout = windowMs || (isAutoSwitch ? 500 : 1000);
+        if (isAutoSwitch) {
+            const budget = this._bodyProbeBudget(probeTimeout);
+            this._lastProbeBudget = budget;
+            if (!budget.affordable) {
+                if (!this._probeSkipLogged) {
+                    this._probeSkipLogged = true;
+                    this._dep('debugManager')?.info?.(
+                        `👀 Body peek disabled: pose costs ${Math.round(budget.costMs)}ms of main thread per tick `
+                        + `(>1.5 frames). Auto-switch falls back to the low-confidence path. Override: __bodyProbeCostGate = false`);
+                }
+                return;
+            }
+            probeTimeout = budget.windowMs;
+        }
         this._dep('debugManager')?.info?.(`👀 Peeking Body Mode (${isAutoSwitch ? 'auto' : 'manual'}, ${probeTimeout}ms window)...`);
         this.isProbingBody = true;
         this.probeStartTime = performance.now();
@@ -1461,10 +1634,14 @@ class SharedCameraManager {
                         // peek at pose every few seconds to detect arm-waving.
                         // Without this, face→body switch only triggers on low face confidence,
                         // meaning waving arms while face is visible never triggers a switch.
+                        // Interval is cost-aware too, not just the window: an expensive
+                        // probe backs off in frequency so its duty cycle stays bounded.
+                        // See _bodyProbeBudget().
+                        const probeIntervalMs = this._bodyProbeBudget(500).intervalMs;
                         if (this.autoSwitchEnabled && this.autoSwitchConfig.enabled &&
                             this.permissions.head && this.permissions.body &&
                             this.poseLoaded && this.pose &&
-                            now - this._lastBodyProbeTime > this.autoSwitchConfig.bodyProbeIntervalMs &&
+                            now - this._lastBodyProbeTime > probeIntervalMs &&
                             now - this.lastSwitchTime > this.autoSwitchConfig.cooldownMs) {
                             this._lastBodyProbeTime = now;
                             // Short pose burst → consecutive frames for velocity

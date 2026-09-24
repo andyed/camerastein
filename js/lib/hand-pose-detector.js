@@ -142,6 +142,16 @@ class HandPoseDetector {
             thumbCentered: false,   // hand near frame center AND close to camera
             thumbCharge: 0,         // 0-1: progressive dwell toward confirmation
 
+            // Held finger-count command gesture (geometry only, dwell-confirmed).
+            // Holding 1, 2, or 3 fingers steady (thumb ignored) charges
+            // fingerHoldCharge 0→1; at full charge the detector fires
+            // onGesture('fingerHold', {count}) ONCE and latches until the pose
+            // changes or releases. Demo-legible mapping: N fingers → jukebox
+            // preset N (see motion-init.js onGesture handler). Suspended while a
+            // thumb verdict is charging or a fist/pinch gesture is active.
+            fingerHoldCount: 0,     // 0-3: current per-frame candidate finger count (0=none)
+            fingerHoldCharge: 0,    // 0-1: progressive dwell toward the fingerHold command
+
             // Meta
             confidence: 0,
             dominantHand: 0,        // 0=left, 1=right (by larger motion)
@@ -185,6 +195,18 @@ class HandPoseDetector {
         this._lastThumbConfirmTime = 0;
         this._thumbConfirmCooldownMs = 800;
         this._thumbLatched = false;    // true after a confirm until pose released
+
+        // ── Held finger-count command gesture (deliberate, dwell-confirmed) ──
+        // Same pattern as the thumbs-up/down gesture above, generalized to
+        // "hold N fingers steady" (N=1,2,3; thumb ignored — see
+        // _extractFingerHoldCount / _updateFingerHoldCharge for the
+        // classification + dwell envelope). Live tuning via window.__fingerHold*
+        // flags (see those methods' doc comments).
+        this._fingerHoldChargeLastT = 0;
+        this._fingerHoldPrevCount = 0;       // previous frame's candidate, for the stability gate
+        this._fingerHoldLatchedCount = 0;    // count currently latched (0 = none latched)
+        this._lastFingerHoldConfirmTime = { 1: 0, 2: 0, 3: 0 };
+        this._fingerHoldCooldownMs = 1200;
 
         // Bind
         this._onResults = this._onResults.bind(this);
@@ -280,6 +302,10 @@ class HandPoseDetector {
      */
     _onResults(results) {
         const now = performance.now();
+        // Timestamp every processed result, including a fresh "no hands" result.
+        // Reusing the last hands-present timestamp makes an actively running
+        // detector look stale and poisons source-rate / source-age diagnostics.
+        this.state.timestamp = now;
 
         // Decay the strike-energy envelope every frame (incl. no-hands frames) so it
         // falls off ~1-2s after drumming stops, independent of frame rate.
@@ -296,6 +322,12 @@ class HandPoseDetector {
             this.state.thumbConfidence = 0;
             this.state.thumbCentered = false;
             this._updateThumbCharge(now);
+
+            // No hand → finger-hold candidate inactive; let any in-progress
+            // charge bleed off the same way (brief occlusion shouldn't bank
+            // dwell progress).
+            this.state.fingerHoldCount = 0;
+            this._updateFingerHoldCharge(now);
 
             // Low-confidence timeout
             if (!this._lowConfidenceStart) {
@@ -398,6 +430,12 @@ class HandPoseDetector {
         this._extractThumbPose(dominant);
         this._updateThumbCharge(now);
 
+        // ── Finger-hold command gesture (dwell-confirmed 1/2/3 count) ──
+        // Classify AFTER per-finger curl + extension AND the thumb charge update
+        // above (the suspend check reads the fresh thumbCharge).
+        this._extractFingerHoldCount();
+        this._updateFingerHoldCharge(now);
+
         // ── Direct controls (Phase 3) ──
         if (this._directControlEnabled) {
             this._applyDirectControls(now);
@@ -406,7 +444,6 @@ class HandPoseDetector {
         // ── Emit syntax pulses (Phase 4) ──
         this._emitMotionPulses(now);
 
-        this.state.timestamp = now;
         this._broadcastState();
     }
 
@@ -944,14 +981,14 @@ class HandPoseDetector {
 
         if (s.fistClosure > 0.8 && now - this._lastFistTime > this._edgeCooldownMs) {
             this._lastFistTime = now;
-            this._deps.onGesture?.('fist', { closure: s.fistClosure });
+            this._deps.onGesture?.('fist', { t: now, closure: s.fistClosure });
         }
 
         const spreadRate = s.fingerSpread - this._prevSpreadForFlash;
         this._prevSpreadForFlash = s.fingerSpread;
         if (spreadRate > 0.3 && now - this._lastPalmFlashTime > this._edgeCooldownMs) {
             this._lastPalmFlashTime = now;
-            this._deps.onGesture?.('palmFlash', { spreadRate });
+            this._deps.onGesture?.('palmFlash', { t: now, spreadRate });
         }
     }
 
@@ -1061,10 +1098,19 @@ class HandPoseDetector {
                 // so log every one (the default 1000ms transition throttle would hide
                 // most hits during drumming).
                 this._dep('debugManager')?.logTransition?.('hand', 'strike', { intensity: +intensity.toFixed(2), hand: handIdx, count: this.state.strikeCount }, { minIntervalMs: 0 });
-                // Input-rhythm pulse (same path as keyboard/scroll pulses → engagement).
-                this._dep('pulseCollector')?.recordPulse?.('camera', 'hand-strike', intensity);
+                // Deliberate input-rhythm pulse. Keep this distinct from the noisy
+                // `camera` motion stream: SyntaxAnalyzer intentionally excludes
+                // ordinary camera edges from IOI/lockQuality, while a debounced
+                // air-drum strike is conscious punctuation that may earn genuine
+                // hand↔music Resonance before Psychodeli quantizes its visual landing.
+                this._dep('pulseCollector')?.recordPulse?.('hand', 'hand-strike', intensity);
                 // Discrete visual hit — host maps this (Psychodeli → SkewEvolution.beatPulse).
-                this._deps.onGesture?.('strike', { intensity, hand: handIdx, peakVelocity: +peak.toFixed(4) });
+                this._deps.onGesture?.('strike', {
+                    t: now,
+                    intensity,
+                    hand: handIdx,
+                    peakVelocity: +peak.toFixed(4),
+                });
             }
         }
     }
@@ -1121,13 +1167,127 @@ class HandPoseDetector {
                 s.thumbCharge = 0;                  // drop the visual lean at the moment of commit
                 this._dep('debugManager')?.logTransition?.('hand', 'thumb-confirm',
                     { direction, confidence: +s.thumbConfidence.toFixed(2) }, { minIntervalMs: 0 });
-                this._deps.onGesture?.('thumbConfirm', { direction, confidence: s.thumbConfidence });
+                this._deps.onGesture?.('thumbConfirm', {
+                    t: now,
+                    direction,
+                    confidence: s.thumbConfidence,
+                });
             }
         } else {
             const tau = Math.max(0.05, window.__thumbChargeTau ?? 0.4);
             s.thumbCharge = (s.thumbCharge || 0) * Math.exp(-dt / tau);
             if (s.thumbCharge < 0.01) s.thumbCharge = 0;
             if (!active) this._thumbLatched = false; // pose released → re-arm
+        }
+    }
+
+    /**
+     * Held finger-count classification — geometry only, no extra model. Reads
+     * the per-finger curl/extension signals already computed by
+     * _extractPerFingerCurl / _extractPerFingerExtension this frame (must run
+     * AFTER those, and after _updateThumbCharge so thumbCharge is fresh).
+     * Thumb is deliberately ignored: people's thumbs wander while counting,
+     * and folding it in would fight the thumbConfirm gesture for the same
+     * hand. Counts 1-3 only (demo-legible, and 4/5-finger reads are
+     * ambiguous against an open/spread hand):
+     *   1 → index extended, middle+ring+pinky curled
+     *   2 → index+middle extended, ring+pinky curled
+     *   3 → index+middle+ring extended, pinky curled
+     * Suspended entirely (count forced to 0) while a thumb verdict is
+     * charging (thumbCharge > 0.15) or a fist/pinch gesture is active — those
+     * own the hand right now, and finger-hold would otherwise flicker
+     * mid-transition. Sets state.fingerHoldCount (0-3, the per-frame
+     * candidate; _updateFingerHoldCharge is what requires it to HOLD).
+     *
+     * Live tuning: window.__fingerHoldExtMin (extension floor for counted
+     *   fingers, def 0.6), __fingerHoldCurlMin (curl floor for excluded
+     *   fingers, def 0.55).
+     */
+    _extractFingerHoldCount() {
+        const s = this.state;
+
+        // Another deliberate gesture already owns this hand — don't contend.
+        if (s.thumbCharge > 0.15 || s.fistClosure > 0.8 || s.pinchStrength > 0.7) {
+            s.fingerHoldCount = 0;
+            return;
+        }
+
+        const EXT_MIN  = window.__fingerHoldExtMin  ?? 0.6;
+        const CURL_MIN = window.__fingerHoldCurlMin ?? 0.55;
+
+        let count = 0;
+        if (s.indexExtension >= EXT_MIN && s.middleExtension >= EXT_MIN && s.ringExtension >= EXT_MIN &&
+            s.pinkyCurl >= CURL_MIN) {
+            count = 3;
+        } else if (s.indexExtension >= EXT_MIN && s.middleExtension >= EXT_MIN &&
+            s.ringCurl >= CURL_MIN && s.pinkyCurl >= CURL_MIN) {
+            count = 2;
+        } else if (s.indexExtension >= EXT_MIN &&
+            s.middleCurl >= CURL_MIN && s.ringCurl >= CURL_MIN && s.pinkyCurl >= CURL_MIN) {
+            count = 1;
+        }
+
+        s.fingerHoldCount = count;
+    }
+
+    /**
+     * Advance the finger-hold dwell charge. Mirrors _updateThumbCharge's
+     * time-based envelope: a STABLE candidate (identical fingerHoldCount
+     * across consecutive frames) with the hand held steady (fingerVelocity
+     * at or below __fingerHoldMotionMax) builds fingerHoldCharge 0→1 over
+     * __fingerHoldDwellMs; a changed count, high motion, or count===0 decays
+     * it instead (τ = __fingerHoldChargeTau). At full charge it fires
+     * onGesture('fingerHold', {count}) ONCE and latches — the SAME count
+     * won't fire again until the pose changes or releases (count !== the
+     * latched count), and a per-count cooldown (~1200ms) guards a fast
+     * release+re-hold of the identical count. Time-based (uses dt), so the
+     * 3.3Hz overlay rate and 20fps dedicated rate behave the same.
+     *
+     * Live tuning: window.__fingerHoldCommands (false disables — master
+     *   gate), __fingerHoldDwellMs (build ms to confirm, def 750),
+     *   __fingerHoldChargeTau (release decay seconds, def 0.3),
+     *   __fingerHoldMotionMax (fingerVelocity ceiling to keep charging, def 0.15).
+     */
+    _updateFingerHoldCharge(now) {
+        const s = this.state;
+        const last = this._fingerHoldChargeLastT || now;
+        const dt = Math.max(0, Math.min(0.25, (now - last) / 1000)); // clamp long gaps/tab-blur
+        this._fingerHoldChargeLastT = now;
+
+        if (window.__fingerHoldCommands === false) {
+            s.fingerHoldCharge = 0;
+            this._fingerHoldLatchedCount = 0;
+            this._fingerHoldPrevCount = s.fingerHoldCount || 0;
+            return;
+        }
+
+        const count = s.fingerHoldCount;
+        const MOTION_MAX = window.__fingerHoldMotionMax ?? 0.15;
+        const stableCount = count > 0 && count === this._fingerHoldPrevCount;
+        const steady = s.fingerVelocity <= MOTION_MAX;
+        this._fingerHoldPrevCount = count;
+
+        // A count change (including a release to 0) re-arms the latch — the
+        // NEXT hold of any count (including this same one) is free to charge.
+        if (count !== this._fingerHoldLatchedCount) this._fingerHoldLatchedCount = 0;
+
+        if (stableCount && steady && this._fingerHoldLatchedCount !== count) {
+            const ms = Math.max(100, window.__fingerHoldDwellMs ?? 750);
+            s.fingerHoldCharge = Math.min(1, (s.fingerHoldCharge || 0) + (dt * 1000) / ms);
+
+            if (s.fingerHoldCharge >= 1 &&
+                (now - (this._lastFingerHoldConfirmTime[count] || 0)) >= this._fingerHoldCooldownMs) {
+                this._lastFingerHoldConfirmTime[count] = now;
+                this._fingerHoldLatchedCount = count;   // require a release before this count re-arms
+                s.fingerHoldCharge = 0;                 // drop the visual lean at the moment of commit
+                this._dep('debugManager')?.logTransition?.('hand', 'finger-hold-confirm',
+                    { count }, { minIntervalMs: 0 });
+                this._deps.onGesture?.('fingerHold', { t: now, count });
+            }
+        } else {
+            const tau = Math.max(0.05, window.__fingerHoldChargeTau ?? 0.3);
+            s.fingerHoldCharge = (s.fingerHoldCharge || 0) * Math.exp(-dt / tau);
+            if (s.fingerHoldCharge < 0.01) s.fingerHoldCharge = 0;
         }
     }
 
@@ -1164,6 +1324,10 @@ class HandPoseDetector {
         this.state.thumbCentered = false;
         this.state.thumbCharge = 0;
         this._thumbLatched = false;
+        this.state.fingerHoldCount = 0;
+        this.state.fingerHoldCharge = 0;
+        this._fingerHoldLatchedCount = 0;
+        this._fingerHoldPrevCount = 0;
         this.state.twoHandDistance = 0;
         this.state.handCount = 0;
         this.state.pinchDelta = 0;
