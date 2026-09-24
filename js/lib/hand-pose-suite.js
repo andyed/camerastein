@@ -40,9 +40,13 @@ const num = (x) => (typeof x === 'number' && isFinite(x)) ? x : 0;
  * Threshold shapes. `enter` gates a new episode, `exit` is the looser bound an
  * open one must stay inside, `full` is where the meter reads 1.
  *
- * Measured on synthetic hands: an extended finger reads 0.99–1.00 and a curled
- * one 0.48–0.68, so the bands below sit either side of a wide gap. Real hands
- * are noisier; the lab's sliders exist for that.
+ * Long fingers are measured by wrist reach (`fingerReach`, OptiGest's rule).
+ * On a live guided run (2026-09-24) extended fingers read ≥ 0.93 and curled
+ * ones ≤ 0.41 in every pose; synthetic hands read 0.96–1.00 and 0.19–0.39. The
+ * EXTENDED and CURLED bands below sit inside that gap. The thumb is still
+ * measured by straightness, and THUMB_TUCKED is still calibrated on fixtures
+ * only — a real thumb across a fist reads 0.84–0.92, which is why fist does not
+ * yet fire live (see tests/hand-live-fixtures.test.js).
  */
 const EXTENDED = Object.freeze({ enter: 0.85, exit: 0.72, full: 1.0, dir: 1 });
 const CURLED = Object.freeze({ enter: 0.55, exit: 0.66, full: 0.15, dir: -1 });
@@ -52,13 +56,13 @@ const THUMB_TUCKED = Object.freeze({ enter: 0.55, exit: 0.68, full: 0.30, dir: -
 /**
  * Not edge-on — a precondition of every pose here, not a stylistic preference.
  *
- * Image-plane finger extension is direction-dependent. With the palm toward the
- * camera the fingers curl into depth, so the projected base→tip distance
- * collapses and the same fully curled finger reads **0.16**. Turned edge-on the
- * curl happens in the image plane, projection is honest, and it reads **0.71**.
- * A "curled" threshold that works for one orientation is meaningless in the
- * other, so every one-hand pose requires the hand to be facing the camera and
- * says so, rather than silently reporting nonsense when it is not.
+ * This gate was written for straightness (`fingerExtension`), which is
+ * direction-dependent: a fully curled finger read **0.16** palm-on and **0.71**
+ * edge-on, so a "curled" threshold for one orientation was meaningless in the
+ * other. Wrist reach, which the long fingers now use, is far less so — the
+ * same finger reads 0.20 palm-on and 0.39 edge-on, both well inside CURLED.
+ * The gate stays for now because the thumb is still on straightness; whether
+ * it can be relaxed is a question for more live clips, not this one.
  *
  * (Pray is unaffected: its hands are edge-on by definition and its `flatness`
  * bounds were derived there, where 2D and 3D agree exactly.)

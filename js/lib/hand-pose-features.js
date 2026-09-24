@@ -186,6 +186,53 @@ export function fingerExtension(landmarks, chain) {
 }
 
 /**
+ * Wrist-reach calibration: the raw reach that maps to 0 and to 1.
+ *
+ * Measured on a live guided run (2026-09-24, one subject): extended long
+ * fingers read 1.25–1.38 raw, curled ones 0.34–0.89, in every pose recorded.
+ * Synthetic hands agree: 1.31–1.36 straight, 0.73–0.87 fully curled, facing
+ * the camera or edge-on. Mapping 0.6 → 0 and 1.3 → 1 puts real extended
+ * fingers at ≥ 0.93 and curled at ≤ 0.41, so the suite's EXTENDED (0.85) and
+ * CURLED (0.55) bands sit inside the measured gap with margin on both sides.
+ */
+export const REACH_CURLED = 0.6;
+export const REACH_STRAIGHT = 1.3;
+
+/**
+ * Finger extension by wrist reach — OptiGest's rule, made continuous.
+ *
+ * OptiGest (optimac `FingerCounter.isExtended`) calls a finger extended when
+ * its tip is farther from the wrist than both its PIP and its MCP. Here that
+ * is the ratio `tip→wrist ÷ max(pip→wrist, mcp→wrist)` — above 1 is the
+ * OptiGest "extended" — rescaled onto 0 curled … 1 straight.
+ *
+ * Why not `fingerExtension` for the one-hand suite: that is straightness, the
+ * base→tip chord over the chain length, and it is scale-free in the wrong way.
+ * A finger curled *toward the camera* projects as a short straight segment,
+ * so its chord equals its chain and it reads 1.00 — straight. A live peace
+ * sign read its tucked ring and pinky as fully extended for exactly this
+ * reason. Reach does not care how straight the projection is, only whether
+ * the tip got farther from the wrist than the knuckles did, and a curl in any
+ * direction brings the tip back.
+ *
+ * Long fingers only. The thumb's tip clears its knuckles whether it is tucked
+ * across a fist or not (OptiGest found the same and dropped the thumb from its
+ * fist test), so the thumb keeps `fingerExtension`.
+ */
+export function fingerReach(landmarks, chain) {
+    if (!landmarks) return 0;
+    const wrist = pt(landmarks[LM.WRIST]);
+    const [mcp, pip, , tip] = chain.map((index) => pt(landmarks[index]));
+    if (!wrist || !mcp || !pip || !tip) return 0;
+
+    const knuckle = Math.max(dist2(pip, wrist), dist2(mcp, wrist));
+    if (!(knuckle > EPS)) return 0;
+
+    const reach = dist2(tip, wrist) / knuckle;
+    return Math.max(0, Math.min(1, (reach - REACH_CURLED) / (REACH_STRAIGHT - REACH_CURLED)));
+}
+
+/**
  * Flatness: mean extension of the four non-thumb fingers, 0..1.
  * A prayer hand is flat; a loose two-hand clasp is not.
  */
@@ -213,7 +260,8 @@ const TIPS = Object.freeze({
  * and every one of those is a key here. Nothing in it uses z.
  *
  * @returns {object|null}
- *   thumbExtension … pinkyExtension — 0 curled, 1 straight
+ *   thumbExtension — 0 curled, 1 straight (chord ÷ chain, fingerExtension)
+ *   indexExtension … pinkyExtension — 0 curled, 1 extended (wrist reach, fingerReach)
  *   spread  — SMALLEST adjacent fingertip gap ÷ hand length. The minimum, not
  *             the mean: an outer pair staying wide would otherwise hide two
  *             fingers collapsing together, which is how a "duck" shape passes a
@@ -232,8 +280,11 @@ export function handShape(landmarks) {
         center: frame.center,
         scale: frame.scale,
     };
+    // Long fingers by wrist reach, the thumb by straightness — see fingerReach.
     for (const [name, chain] of Object.entries(FINGER_CHAINS)) {
-        shape[`${name}Extension`] = fingerExtension(landmarks, chain);
+        shape[`${name}Extension`] = name === 'thumb'
+            ? fingerExtension(landmarks, chain)
+            : fingerReach(landmarks, chain);
     }
 
     let spread = Infinity;

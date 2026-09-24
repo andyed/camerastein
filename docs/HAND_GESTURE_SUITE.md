@@ -58,26 +58,49 @@ measurements that inflated 6.6× when it did.
 
 | Field | Meaning |
 |---|---|
-| `thumbExtension` … `pinkyExtension` | 0 curled, 1 straight, over MCP → TIP |
+| `thumbExtension` | 0 curled, 1 straight: chord ÷ chain over CMC → TIP (`fingerExtension`) |
+| `indexExtension` … `pinkyExtension` | 0 curled, 1 extended: wrist reach (`fingerReach`, OptiGest's rule) |
 | `spread` | smallest adjacent fingertip gap ÷ hand length |
 | `pinch` | thumb tip ↔ index tip ÷ hand length |
 | `aspect` | projected palm width ÷ length; low is edge-on |
 | `uprightness` | +1 fingers straight up |
 | `thumbUpness` | +1 thumb up, −1 thumb down |
 
-Measured on synthetic hands, an extended finger reads 1.00 and a fully curled
-one 0.15–0.23, so the thresholds sit either side of a wide gap. The chains match
-`handPoseDetector._fingerChains` exactly, so extension is the complement of its
-`state.<finger>Curl` — see the reconciliation section below.
+**Long fingers are measured by wrist reach**, OptiGest's rule
+(optimac `FingerCounter.isExtended`) made continuous: `tip→wrist ÷
+max(pip→wrist, mcp→wrist)`, above 1 extended, rescaled so 0.6 → 0 and 1.3 → 1.
+It replaced straightness (chord ÷ chain) after the first live run: a finger
+curled *toward* the camera projects as a short straight segment, its chord
+equals its chain, and straightness called it fully extended. A live peace sign
+read its tucked ring and pinky at 1.00 and fired openPalm; a point with the hand
+turned read its curled fingers at 0.60–0.78 and fired nothing. Reach only asks
+whether the tip got farther from the wrist than the knuckles did.
 
-**Every one-hand pose requires the hand to face the camera**, and says so as a
-criterion. That is not a stylistic preference: projected finger extension is
-direction-dependent. With the palm toward the lens the fingers curl into depth
-and the projection collapses, so a fully curled finger reads **0.16**; turned
-edge-on the curl runs across the image, projection is exact, and the same finger
-reads **0.71**. A threshold calibrated in one orientation is meaningless in the
-other. (Pray is unaffected — its hands are edge-on by definition, which is the
-orientation where 2D and 3D agree exactly.)
+| | extended | curled |
+|---|---|---|
+| live run, 2026-09-24, every pose | ≥ 0.93 | ≤ 0.41 |
+| synthetic, palm-on and edge-on | 0.96–1.00 | 0.19–0.39 |
+
+Replaying that run (`node scripts/replay-hand-clip.mjs`) moved point from
+nothing to 100% and peace from openPalm 93% to peace 100%, with openPalm,
+thumbsUp and thumbsDown unchanged at 100%. The real landmarks are kept as
+`tests/fixtures/hand-live-2026-09-24.json`.
+
+**The thumb is still on straightness.** Its tip clears its knuckles whether it
+is tucked across a fist or not — OptiGest hit the same thing and dropped the
+thumb from its fist test — so reach cannot tell a fist from a thumbs-up. Neither
+can straightness on a real hand: a thumb across a fist reads 0.84–0.92, above
+THUMB_TUCKED, so **fist reads as thumbsUp live**. Fixing it needs a thumb test of
+its own (does the tip sit over the fingers, or clear them?).
+
+`fingerExtension` is unchanged, and is still the exact complement of
+`handPoseDetector.state.<finger>Curl` — pray's `flatness` and Psychodeli's
+thumb gesture use it, and pray was live-validated on it.
+
+**Every one-hand pose requires the hand to face the camera.** The gate was
+written for straightness, which was direction-dependent (a fully curled finger
+read 0.16 palm-on, 0.71 edge-on). Reach is far less so (0.20 and 0.39), but the
+gate stays while the thumb is on straightness.
 
 **`spread` and `pinch` are reported but nothing gates on them.** The synthetic
 hand does not model finger splay or a thumb-to-index touch, so no threshold for
@@ -250,7 +273,7 @@ readout exists to explain.
 ## Validation
 
 ```bash
-npm test    # 119 cases; every recognizer is camera-free and deterministic
+npm test    # every recognizer is camera-free and deterministic
 ```
 
 In the lab, every held pose has a **rehearse** button that runs synthetic
@@ -263,11 +286,18 @@ extraction from a real camera — that is what
 [PRAY_TEST_SCRIPT.md](PRAY_TEST_SCRIPT.md) is for, and the same layer
 discipline applies to every pose here.
 
-## Not yet live-tested
+## Live-test status
 
-The pose suite has been validated against synthetic landmarks and in-browser bus
-traffic only. Expect the extension thresholds to move on real hands: the
-synthetic hand curls more cleanly than a real one, and a finger curling *toward*
-the lens is the documented blind spot of image-plane extension — such a hand is
-not edge-on, so `aspect` catches it for the poses that check orientation, and
-nothing catches it for the poses that do not.
+One guided run so far (2026-09-24, one subject, desktop webcam, Hand mode at
+~18.7 Hz), recorded with the lab's **guided run** and replayed offline:
+
+| pose | live | note |
+|---|---|---|
+| openPalm, thumbsUp, thumbsDown | ✅ | |
+| point, peace | ✅ after reach | straightness failed both |
+| fist | ❌ reads thumbsUp | thumb needs its own test |
+| horns | untested | performed as bull horns; the prompt now shows the cue |
+| pray | ❌ this run | MediaPipe lost both hands, backlit; pray passed earlier runs |
+
+Also seen: relaxed hands at rest read as openPalm most of the time. Not yet
+investigated.
