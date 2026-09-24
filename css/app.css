@@ -268,6 +268,21 @@ body {
 }
 
 /* ── Face gesture recognizer lab (left, collapsible) ── */
+/*
+   Palette is contrast-checked against the panel's own worst case: a card
+   surface (rgba(255,255,255,0.035)) sitting on the strongest point of the
+   purple radial gradient, i.e. #282244. Every readable colour below clears
+   8:1 there, so it clears it everywhere else in the panel:
+     #f4f1ff 13.46:1   #eeebf6 12.73:1   #e8e6f2 12.14:1   #e5deff 11.57:1
+     #dad6e8 10.53:1   #d8d3e3 10.23:1   #ffc2c9  9.85:1   #d2cee2  9.74:1
+     #73e1d7  9.61:1
+   Tinted surfaces (active card, active chip, source row, rehearse hover) are
+   checked separately; the lowest ratio across all of them is 8.26:1
+   (#73e1d7 on an active card). The two event-source badges are dark
+   text on a light fill: #061413 on #4ecdc4 is 9.71:1, #130d28 on #c0abff
+   is 9.42:1 — the old #a78bfa fill capped that letter at 7.72:1 even
+   against pure black, so the fill had to lift rather than the glyph.
+*/
 #gesture-lab-panel {
     position: fixed;
     top: 49px;
@@ -310,7 +325,7 @@ body {
 .gesture-source,
 .gesture-calibration,
 .gesture-event-heading span {
-    color: #8d899e;
+    color: #d2cee2;
     font-size: 10px;
     font-weight: 650;
     letter-spacing: 0.09em;
@@ -329,7 +344,7 @@ body {
     height: 34px;
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 50%;
-    color: #bcb6cc;
+    color: #dad6e8;
     background: rgba(255, 255, 255, 0.04);
     font-size: 22px;
     line-height: 1;
@@ -350,7 +365,7 @@ body {
 
 .gesture-lab-intro {
     margin: 12px 1px;
-    color: #aaa5b6;
+    color: #dad6e8;
     font-size: 12px;
     line-height: 1.45;
 }
@@ -368,7 +383,7 @@ body {
     flex: 0 0 auto;
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 999px;
-    color: #9d98aa;
+    color: #dad6e8;
     background: rgba(255, 255, 255, 0.035);
     font: inherit;
     cursor: pointer;
@@ -438,7 +453,7 @@ body {
 
 .gesture-rehearse {
     padding: 4px 7px;
-    color: #c9bfff;
+    color: #e5deff;
     font-size: 9px;
 }
 
@@ -450,14 +465,14 @@ body {
 .gesture-card p {
     min-height: 30px;
     margin: 8px 0 7px;
-    color: #928d9f;
+    color: #dad6e8;
     font-size: 10px;
     line-height: 1.35;
 }
 
 .gesture-state-row {
     margin-bottom: 5px;
-    color: #aaa5b6;
+    color: #d2cee2;
     font-family: 'SF Mono', 'Fira Code', monospace;
     font-size: 10px;
 }
@@ -486,7 +501,7 @@ body {
     display: block;
     margin-top: 7px;
     overflow: hidden;
-    color: #777286;
+    color: #d2cee2;
     font-size: 8px;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -503,7 +518,7 @@ body {
 }
 
 .rehearsal-failed .gesture-event-heading span {
-    color: #ff7d8e;
+    color: #ffc2c9;
 }
 
 .gesture-event-log {
@@ -519,7 +534,7 @@ body {
     align-items: center;
     gap: 6px;
     min-height: 24px;
-    color: #9d98aa;
+    color: #d2cee2;
     font-family: 'SF Mono', 'Fira Code', monospace;
     font-size: 9px;
 }
@@ -545,7 +560,7 @@ body {
 
 .gesture-event-source.synthetic {
     color: #130d28;
-    background: #a78bfa;
+    background: #c0abff;
 }
 
 .gesture-event-log i {
@@ -556,13 +571,13 @@ body {
 }
 
 .gesture-event-log small {
-    color: #6f6a7b;
+    color: #d2cee2;
     text-align: right;
 }
 
 .gesture-event-empty {
     display: block !important;
-    color: #686472 !important;
+    color: #d2cee2 !important;
 }
 
 @media (max-width: 680px) {
