@@ -1,46 +1,52 @@
 # Resume — hand gesture suite
 
-**Branch:** `feat/hand-gesture-suite` (5 commits, unpushed). `npm test` → 119/119.
+**Branch:** `feat/hand-gesture-suite` (unpushed). `npm test` → 122 pass, 1 todo.
 **Docs:** `docs/HAND_GESTURE_SUITE.md`, `docs/HAND_GESTURE_PRAY.md`, `docs/PRAY_TEST_SCRIPT.md`
 
-## Where it stands
+## How live testing works now
 
-Pray is **live-validated** — Andy tested it on a real webcam across four rounds
-and it holds, including sustaining ~10 s on a single occluded hand. Everything
-else in the suite has met synthetic landmarks only.
+No reading numbers off the screen. Start the sink, open the app with it, and
+click **guided run** in the hands lab — it cues each pose on the video and
+records every frame:
+
+```bash
+node scripts/hand-log-sink.mjs                     # then open ?handlog=http://127.0.0.1:8792
+node scripts/replay-hand-clip.mjs                  # score the newest run against current code
+```
+
+Runs land in `logs/clips/<run>/` (gitignored — frames of a face): JPEG frames at
+~5 fps in optimac's clip layout, `rows.jsonl` with full landmarks, and
+`manifest.json` with the cued pose per frame. Replay needs only the rows.
+
+## Where it stands (run of 2026-09-24)
+
+openPalm, thumbsUp, thumbsDown, point and peace fire live — point and peace only
+after the long fingers moved to wrist reach (OptiGest's rule). Pray passed four
+earlier live rounds but lost both hands to MediaPipe on this run (backlit).
 
 ## Pick up here
 
-1. **Live-test the seven one-hand poses.** Open the app, click **Hand**, then
-   **hands** (top right). Focus each pose and check the reason tally. The
-   thresholds came from a synthetic hand that curls more cleanly than a real one,
-   so expect the extension bounds to move. Record what moved and why in
-   `HAND_GESTURE_SUITE.md`.
-2. **Air-drum strike needs a dedicated Hand mode**, not the throttled overlay.
-   The card now measures peak wrist speed against the threshold, so a zero count
-   names its own cause. The non-obvious one: a strike fires on the
-   *deceleration*, so a stroke that ends while still moving registers nothing.
-3. **Decide on the accepted false positive** — backs of hands pressed together,
-   fingers up, reads as pray. Detectable in principle; left undone.
+1. **Thumb test for fist vs thumbs-up.** A real thumb across a fist reads 0.84–0.92
+   straight and points up, so fist fires thumbsUp. Candidate: is the thumb tip
+   over the fingers, or clear of them? `tests/hand-live-fixtures.test.js` holds
+   the failing case as a todo.
+2. **Re-record front-lit** to confirm pray's hand loss is lighting, and to test
+   horns (the prompt now shows each pose's cue).
+3. **Relaxed hands at rest read as openPalm** most of the time. Uninvestigated.
+4. Carried over: air-drum strike needs a dedicated Hand mode; the backs-of-hands
+   pray false positive is still accepted.
 
-## Known gaps, written down so they are not rediscovered
+## Known gaps
 
-- `spread` and `pinch` are reported but gate nothing. The fixture models neither
-  finger splay nor a thumb-to-index touch, so no threshold for them is
-  validated. A pose that needs one means building the fixture first.
-- `handPoseDetector.state.thumbExtension` is scale-dependent — 0.23 → 1.00
-  across camera distance on an unchanged pose. Flagged, not changed: the file is
-  shared with Psychodeli+ and its thumb behaviour is shipped and tuned. Dividing
-  by `palmLength` would fix it.
-- The face Gesture Lab has three text colours below the project's 8:1 contrast
-  floor (`#8d899e` 4.41:1, `#928d9f` 4.65:1, `#777286` 3.23:1). A background task
-  for this was spun off into `.claude/worktrees/eloquent-jang-21110f` and had not
-  reported back when this session ended.
+- `spread` and `pinch` are reported but gate nothing — no fixture models them.
+- `handPoseDetector.state.thumbExtension` is scale-dependent (0.23 → 1.00 across
+  distance). Shared with Psychodeli+; dividing by `palmLength` would fix it.
+- `hands-loader.js` is the one shared file where camerastein is ahead of
+  Psychodeli (`__handMinDetection` / `__handMinTracking`) — candidate to push up.
 
 ## The lesson worth keeping
 
-Four separate criteria failed in the exact pose they existed to detect — the
-palm normal inverted on chirality, the size proxy collapsed 1.75× edge-on, a
-threshold was tighter than a perfect pose can produce, and 3D distances inflated
-6.6× on depth noise. Calibrate every criterion **at** the gesture, never near it,
-and never let a fixture compensate for something the sensor does not.
+Calibrate every criterion **at** the gesture, on real landmarks. The synthetic
+hand curls its fingers across the image; a real one curls them toward the
+camera, and a measure that looked orientation-proof on fixtures called a tucked
+finger straight on the first live peace sign.
