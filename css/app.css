@@ -1200,3 +1200,63 @@ body {
     font-size: 13px;
     line-height: 1.35;
 }
+
+/* Guided run prompt — readable from arm's length with both hands up. */
+#hand-guided-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    z-index: 60;
+    display: grid;
+    justify-items: center;
+    gap: 6px;
+    min-width: 320px;
+    padding: 18px 28px 14px;
+    border: 2px solid rgba(167, 139, 250, 0.5);
+    border-radius: 14px;
+    background: #0b0a14;
+    transform: translate(-50%, -50%);
+    text-align: center;
+}
+
+#hand-guided-overlay[hidden] { display: none; }
+
+#hand-guided-overlay .hgo-stage {
+    color: #d2cee2;
+    font-size: 16px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+}
+
+#hand-guided-overlay[data-stage="hold"] .hgo-stage { color: #7cf5c4; }
+#hand-guided-overlay[data-stage="hold"] { border-color: #7cf5c4; }
+
+#hand-guided-overlay .hgo-pose {
+    color: #f4f2fb;
+    font-size: 44px;
+    font-weight: 700;
+    line-height: 1.1;
+}
+
+#hand-guided-overlay .hgo-count {
+    color: #e8e6f2;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 30px;
+}
+
+#hand-guided-overlay .hgo-stop {
+    margin-top: 6px;
+    padding: 4px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 6px;
+    background: #1a1726;
+    color: #dad6e8;
+    cursor: pointer;
+}
+
+#hand-guided-overlay .hgo-cue {
+    max-width: 420px;
+    color: #e8e6f2;
+    font-size: 18px;
+    line-height: 1.35;
+}

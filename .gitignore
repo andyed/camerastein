@@ -7,3 +7,6 @@ docs/OPTIMAC_SPEC.md
 headscroll-test.html
 demos/
 js/lib/face-synth-driver.js
+
+# Hand lab recordings: camera frames of a face, never committed
+logs/

@@ -469,6 +469,8 @@ export class HandGestureLab {
             <div class="hlab-actions">
                 <button data-reset>reset</button>
                 <button data-clear>clear events</button>
+                <button data-guided title="Cues each pose on the video and records every frame">guided run</button>
+                <button data-save-log title="Download everything recorded this session">save log</button>
             </div>
 
             <div class="hlab-cards">${cards}</div>
@@ -529,6 +531,12 @@ export class HandGestureLab {
             this.live.clear();
             this.synthetic.clear();
             this._render();
+        });
+        this.panel.querySelector('[data-guided]')?.addEventListener('click', () => {
+            window.HandLabRecorder?.guided();
+        });
+        this.panel.querySelector('[data-save-log]')?.addEventListener('click', () => {
+            window.HandLabRecorder?.download();
         });
         this.panel.querySelector('[data-clear]')?.addEventListener('click', () => {
             this.events = [];

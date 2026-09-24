@@ -12,7 +12,8 @@ import { BenchmarkHarness } from './benchmark-harness.js';
 import { GestureLab } from './gesture-lab.js';
 import { initPrayChannel } from './lib/pray-channel.js';
 import { initHandPoseChannel } from './lib/hand-pose-channel.js';
-import { HandGestureLab } from './hand-gesture-lab.js';
+import { HandGestureLab, HAND_GESTURE_DEFINITIONS } from './hand-gesture-lab.js';
+import { HandLabRecorder } from './hand-lab-recorder.js';
 
 // Wait for DOM
 document.addEventListener('DOMContentLoaded', () => {
@@ -39,6 +40,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // window.PrayGesture.status(); disable with window.__prayChannel = false.
     initPrayChannel();
     initHandPoseChannel();
+    // Recorder before the lab, so the lab's guided-run button has one to drive.
+    window.HandLabRecorder = new HandLabRecorder({
+        labels: Object.fromEntries(Object.entries(HAND_GESTURE_DEFINITIONS)
+            .map(([kind, def]) => [kind, def.label])),
+        cues: Object.fromEntries(Object.entries(HAND_GESTURE_DEFINITIONS)
+            .map(([kind, def]) => [kind, def.cue])),
+    });
     const handGestureLab = new HandGestureLab();
     // Debug panels are worth reaching from the console during a live session.
     window.handGestureLab = handGestureLab;
