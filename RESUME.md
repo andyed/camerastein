@@ -1,6 +1,6 @@
 # Resume — hand gesture suite
 
-**Branch:** `feat/hand-gesture-suite` (unpushed). `npm test` → 122 pass, 1 todo.
+**Branch:** `feat/hand-gesture-suite` (unpushed). `npm test` → 123 pass, 1 todo.
 **Docs:** `docs/HAND_GESTURE_SUITE.md`, `docs/HAND_GESTURE_PRAY.md`, `docs/PRAY_TEST_SCRIPT.md`
 
 ## How live testing works now
@@ -31,9 +31,10 @@ earlier live rounds but lost both hands to MediaPipe on this run (backlit).
    over the fingers, or clear of them? `tests/hand-live-fixtures.test.js` holds
    the failing case as a todo.
 2. **Re-record front-lit** to confirm pray's hand loss is lighting, and to test
-   horns (the prompt now shows each pose's cue).
-3. **Relaxed hands at rest read as openPalm** most of the time. Uninvestigated.
-4. Carried over: air-drum strike needs a dedicated Hand mode; the backs-of-hands
+   horns (the prompt now shows each pose's cue). The run now opens and closes with
+   two negatives — hands out of view, and hands in view not posing — so check
+   the openPalm pitch gate holds on the second.
+3. Carried over: air-drum strike needs a dedicated Hand mode; the backs-of-hands
    pray false positive is still accepted.
 
 ## Known gaps

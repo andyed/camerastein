@@ -51,10 +51,28 @@ function roundFeatures(features) {
     return out;
 }
 
-/** The poses a guided run walks through, with a neutral at each end. */
+/**
+ * Negatives: holds where nothing should fire, with instructions specific
+ * enough to be performed the same way twice. A bare "hands down, relaxed" was
+ * read as hands hanging in view — a fine test, but not the one intended — so
+ * the no-hands baseline and the in-view distractor are now separate cues.
+ */
+const NEGATIVES = {
+    away: {
+        label: 'Hands out of view',
+        cue: 'Both hands in your lap, below the camera. No hand should appear.',
+    },
+    idle: {
+        label: 'Hands in view, not posing',
+        cue: 'Keep your hands visible but do nothing on purpose: let them hang, '
+            + 'rest your chin on one, fidget. Nothing should fire.',
+    },
+};
+
+/** The poses a guided run walks through, bracketed by the two negatives. */
 const GUIDED_SEQUENCE = [
-    'rest', 'openPalm', 'fist', 'point', 'peace', 'horns',
-    'thumbsUp', 'thumbsDown', 'pray', 'rest',
+    'away', 'idle', 'openPalm', 'fist', 'point', 'peace', 'horns',
+    'thumbsUp', 'thumbsDown', 'pray', 'idle', 'away',
 ];
 const READY_MS = 3000;
 const HOLD_MS = 8000;
@@ -281,11 +299,11 @@ export class HandLabRecorder {
     }
 
     _paintOverlay(el, pose, stage, secondsLeft) {
-        const label = pose === 'rest' ? 'Hands down, relaxed' : (this.labels[pose] || pose);
+        const label = NEGATIVES[pose]?.label ?? this.labels[pose] ?? pose;
         el.dataset.stage = stage;
         el.querySelector('[data-hgo-stage]').textContent = stage === 'ready' ? 'get ready' : 'HOLD';
         el.querySelector('[data-hgo-pose]').textContent = label;
-        el.querySelector('[data-hgo-cue]').textContent = pose === 'rest' ? '' : (this.cues[pose] || '');
+        el.querySelector('[data-hgo-cue]').textContent = NEGATIVES[pose]?.cue ?? this.cues[pose] ?? '';
         el.querySelector('[data-hgo-count]').textContent = String(secondsLeft);
     }
 
