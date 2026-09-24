@@ -315,6 +315,13 @@ class HandPoseDetector {
             // No hands detected
             this.state.confidence = 0;
             this.state.handCount = 0;
+            // Landmarks go with the hand. Consumers read "landmarks present" as
+            // "a hand is in frame" — left set, a two-hand pose kept seeing a hand
+            // for the whole occlusion window after MediaPipe had lost both
+            // (camerastein pray clip, 2026-09-24: 66 frames of handCount 0 with
+            // the previous frame's landmarks still attached).
+            this.state.landmarks = null;
+            this.state.landmarks2 = null;
 
             // No hand → thumb gesture inactive; let any in-progress charge bleed off
             // (decays the dwell so a momentary occlusion doesn't bank progress).
