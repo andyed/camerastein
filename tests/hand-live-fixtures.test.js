@@ -55,6 +55,14 @@ test('live hands: each pose matches itself and nothing else', () => {
     }
 });
 
+test('live relaxed hand: hanging in view, back to the camera, matches nothing', () => {
+    // Loosely straight fingers passed every extension bound; only the palm's
+    // pitch (wide and short in projection) says it is not an open palm.
+    const shape = handShape(hand('restHanging'));
+    assert.ok(shape.palmLengthRatio < 0.9, `palmLengthRatio ${shape.palmLengthRatio.toFixed(2)}`);
+    assert.deepEqual(matchingPoses(hand('restHanging')), []);
+});
+
 test('live fist: known gap — a thumb across the fist reads as thumbs-up', { todo: 'thumb needs its own test' }, () => {
     assert.deepEqual(matchingPoses(hand('fist')), ['fist']);
 });

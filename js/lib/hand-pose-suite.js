@@ -68,10 +68,22 @@ const THUMB_TUCKED = Object.freeze({ enter: 0.55, exit: 0.68, full: 0.30, dir: -
  * bounds were derived there, where 2D and 3D agree exactly.)
  */
 const FACING = Object.freeze({ enter: 0.45, exit: 0.30, full: 0.85, dir: 1 });
+/**
+ * Not pitched — the half of "facing the camera" that FACING never checked.
+ *
+ * FACING bounds aspect from below (not edge-on). Nothing bounded it from above,
+ * so a relaxed hand hanging in view, back to the camera and fingers drooping,
+ * passed as an open palm: its fingers are loosely straight and its palm reads
+ * wide and short. On the 2026-09-24 run a real open palm read aspect 0.46–0.48
+ * (ratio ≈ 2.1) and hanging hands at rest read ≥ 1.14 in 95% of frames (ratio
+ * ≤ 0.88). Enter at ratio 0.9 (aspect ≤ 1.11), hold down to 0.75.
+ */
+const NOT_PITCHED = Object.freeze({ enter: 0.9, exit: 0.75, full: 1.6, dir: 1 });
 const THUMB_UP = Object.freeze({ enter: 0.45, exit: 0.25, full: 1.0, dir: 1 });
 const THUMB_DOWN = Object.freeze({ enter: -0.45, exit: -0.25, full: -1.0, dir: -1 });
 
 const label = {
+    palmLengthRatio: 'not pitched',
     thumbExtension: 'thumb', indexExtension: 'index', middleExtension: 'middle',
     ringExtension: 'ring', pinkyExtension: 'pinky',
 };
@@ -116,7 +128,9 @@ export const HAND_POSE_SPECS = Object.freeze({
         title: 'Open palm',
         cue: 'All five fingers straight, hand facing the camera.',
         extended: ['thumb', 'index', 'middle', 'ring', 'pinky'],
-        extra: { aspect: FACING },
+        // Only openPalm is gated on pitch: it is the pose a relaxed hand falls
+        // into. thumbsUp/Down are legitimately side-on (aspect 1.0–1.5 live).
+        extra: { aspect: FACING, palmLengthRatio: NOT_PITCHED },
     }),
     fist: definePose('fist', {
         title: 'Fist',

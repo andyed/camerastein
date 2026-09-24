@@ -268,6 +268,8 @@ const TIPS = Object.freeze({
  *             naive open-hand test. (map-gesture-controls makes the same call.)
  *   pinch   — thumb tip ↔ index tip ÷ hand length. 0 is touching.
  *   aspect  — projected palm width ÷ length; low means edge-on to the camera
+ *   palmLengthRatio — 1 ÷ aspect; low means the palm is pitched toward or away
+ *             from the lens (a hanging hand seen from above or behind)
  *   uprightness — +1 fingers straight up
  */
 export function handShape(landmarks) {
@@ -276,6 +278,11 @@ export function handShape(landmarks) {
 
     const shape = {
         aspect: frame.aspect,
+        // The other side of `aspect`. Low aspect is edge-on; HIGH aspect is the
+        // palm pitched toward or away from the lens, so its length foreshortens
+        // while its width does not. Inverted so a pose can gate it with the
+        // same one-directional bound as everything else.
+        palmLengthRatio: frame.aspect > 1e-6 ? 1 / frame.aspect : 0,
         uprightness: -frame.axis.y,
         center: frame.center,
         scale: frame.scale,

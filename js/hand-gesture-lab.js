@@ -53,6 +53,7 @@ const HAND_SHAPE_HINTS = {
     ringExtension: '0 curled, 1 straight',
     pinkyExtension: '0 curled, 1 straight',
     aspect: 'not edge-on to the camera',
+    palmLengthRatio: 'palm not tipped toward or away from the lens',
     thumbUpness: '+1 up, −1 down',
     spread: 'smallest adjacent fingertip gap',
     pinch: 'thumb tip to index tip',

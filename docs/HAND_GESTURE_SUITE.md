@@ -63,6 +63,7 @@ measurements that inflated 6.6× when it did.
 | `spread` | smallest adjacent fingertip gap ÷ hand length |
 | `pinch` | thumb tip ↔ index tip ÷ hand length |
 | `aspect` | projected palm width ÷ length; low is edge-on |
+| `palmLengthRatio` | 1 ÷ aspect; low is the palm pitched toward or away from the lens |
 | `uprightness` | +1 fingers straight up |
 | `thumbUpness` | +1 thumb up, −1 thumb down |
 
@@ -299,5 +300,16 @@ One guided run so far (2026-09-24, one subject, desktop webcam, Hand mode at
 | horns | untested | performed as bull horns; the prompt now shows the cue |
 | pray | ❌ this run | MediaPipe lost both hands, backlit; pray passed earlier runs |
 
-Also seen: relaxed hands at rest read as openPalm most of the time. Not yet
-investigated.
+**Relaxed hands read as openPalm — fixed.** Asked to rest, the subject held
+both hands in view, backs to the camera, fingers drooping. The fingers were
+loosely straight enough to pass every extension bound, and FACING only bounds
+aspect from below (not edge-on). A pitched palm is the other side: its length
+foreshortens and aspect climbs past 1 (≥ 1.14 in 95% of rest frames, against
+0.46–0.48 for a real open palm). openPalm now also requires `palmLengthRatio`
+(1 ÷ aspect) ≥ 0.9. Replay: rest went from openPalm 90% to nothing, openPalm
+unchanged at 100%. Only openPalm carries this gate — thumbsUp/Down are
+legitimately side-on (aspect 1.0–1.5).
+
+The guided run's single "rest" cue is now two negatives with explicit
+instructions: **hands out of view** (the no-hand baseline) and **hands in view,
+not posing** (let them hang, chin on a hand, fidget — nothing should fire).
