@@ -12,6 +12,8 @@
 
 - [ ] **Replay tool** — Feed pre-recorded video through detectors for deterministic testing.
 
+- [ ] **Native provider contract (ARKit / Vision / LiDAR) — roadmap, filed 2026-10-01.** Psychodeli's native iOS app now has a Capacitor plugin (`PsychodeliVision`) that owns the front camera through ARKit and emits a provider-neutral `VisionFrame` (478-slot face landmarks mapped onto MediaPipe indices, 52 ARKit blendshapes, metric head transform, Vision 21-joint hands, Vision body → 33-slot pose) which a pure decoder turns into Tasks-Vision-shaped results for the shared publishers. Contract: `psychodeli-webgl-port/docs/IOS_NATIVE_VISION.md`. Camerastein should adopt the same contract as a third provider beside inline/worker MediaPipe: (1) port `js/tasks-vision/native/native-frame-decoder.js` (DOM-free, fixture-tested) and accept `VisionFrame` JSON through the Replay tool, so native-provider behaviour is testable here with recorded device frames and no hardware; (2) a Camerastein Capacitor shell becomes the place ARKit/Vision/LiDAR providers get dogfooded before they ship in Psychodeli, matching the "scheduling belongs in Camerastein" direction in Psychodeli's NATIVE_FACE_CAPTURE_SPEC §6; (3) the rear-camera `depthScene` LiDAR channel (8×8 metric depth grid + per-joint metric z) is the first signal MediaPipe cannot produce at all. Blocked on the Psychodeli device verdict (TrueDepth + non-TrueDepth), not on code.
+
 - [ ] **GestureRecognizer** — Tasks Vision has a separate gesture task (thumbs up, pointing, victory). Add as a 4th MotionBus channel.
 
 ## Verification
