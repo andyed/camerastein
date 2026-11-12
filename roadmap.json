@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "product": "Camerastein",
+  "updated": "2026-11-11",
+  "read_me": [
+    "What this project is meant to carry next. Read this before answering any question about the roadmap.",
+    "This repository is public. Everything in this file is published once it is committed and pushed.",
+    "features: one entry per feature, keyed by an id. The same id is used in Psychodeli+'s roadmap.json when the feature is shared.",
+    "lines: a line is a set of platforms that share one version number. Camerastein is a web page with no version number, so it has one rolling line.",
+    "ships: which feature goes out on which of the line's platforms.",
+    "placed_by says who chose it. An entry placed by Claude is a guess until Andy confirms it.",
+    "unplaced: wanted, with nothing scheduled yet.",
+    "Created 2026-11-11 for one feature shared with Psychodeli+. TODO.md still holds the rest of this project's plans.",
+    "The script that checks this file, roadmap-check.mjs, is kept with the other apps' roadmaps and is not in this repository."
+  ],
+  "features": {
+    "relative-depth": {
+      "title": "Relative depth for hand, head and body",
+      "what": "Tell a hand held out toward the camera from one near the head or chest. Here that starts with the tools to test it: record camera frames with their timestamps and landmarks, and replay a recording one frame at a time.",
+      "spec": null,
+      "state": "idea",
+      "paid": null,
+      "asked": "Andy, 2026-11-11",
+      "shared_with": ["Psychodeli+"],
+      "notes": "The write-up is docs/RELATIVE_DEPTH_MINI_SPEC.md in Psychodeli+'s repository; no copy is in this one. Nothing is built. The capture tool and the replay tool are already open in TODO.md, and docs/TESTING_PLAN.md describes them. The write-up names a depth model in the browser as one source of the signal; it has not been tried."
+    }
+  },
+  "lines": [
+    {
+      "line": "web",
+      "platforms": ["web"],
+      "rolling": true,
+      "note": "The demo page has no version number.",
+      "ships": []
+    }
+  ],
+  "unplaced": [
+    { "feature": "relative-depth", "why": "Andy asked for it on this roadmap on 2026-11-11 and named no date." }
+  ]
+}
