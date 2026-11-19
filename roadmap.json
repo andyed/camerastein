@@ -18,6 +18,7 @@
       "title": "Relative depth for hand, head and body",
       "what": "Tell a hand held out toward the camera from one near the head or chest. Here that starts with the tools to test it: record camera frames with their timestamps and landmarks, and replay a recording one frame at a time.",
       "spec": null,
+      "docs": ["docs/TESTING_PLAN.md"],
       "state": "idea",
       "paid": null,
       "asked": "Andy, 2026-11-11",
