@@ -30,6 +30,8 @@ export const MODEL_URLS = Object.freeze({
     poseLite: `${MODEL_BASE}/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
     poseHeavy: `${MODEL_BASE}/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task`,
     hands: `${MODEL_BASE}/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+    // Person mask (js/lib/person-mask-channel.js), Camerastein only for now.
+    selfieSegmenter: `${MODEL_BASE}/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite`,
 });
 
 /** The asset bundle shape the worker's init message expects. */
