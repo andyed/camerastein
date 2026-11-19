@@ -49,7 +49,13 @@ export function oneEuro(minCutoff = 0.7, beta = 12, dCutoff = 1) {
 export const HAND_SMOOTHER_DEFAULTS = Object.freeze({
     minCutoff: 0.7,
     beta: 12,
-    matchRadius: 0.15,  // max wrist travel (normalized image units) to keep a track
+    // Max distance (normalized image units) from where the track's wrist was
+    // HEADING, at its last velocity, to keep a track; it widens by matchGrowth
+    // per second of absence. Matching against the predicted position matters for
+    // swipes: at 15 Hz a fast one moves the wrist ~0.13 of the frame per sample,
+    // close to a plain radius. (toaster portal.js createSwipes does the same.)
+    matchRadius: 0.15,
+    matchGrowth: 0.5,
     keepMs: 400,        // a track missing longer than this is dropped
 });
 
@@ -78,24 +84,36 @@ export function createHandSmoother(options = {}) {
             const wx = finite(lm[0]?.x), wy = finite(lm[0]?.y);
 
             let track = null;
-            let best = o.matchRadius;
+            let best = Infinity;
             for (const tr of live) {
                 if (taken.has(tr) || tr.filters.length !== lm.length) continue;
-                const d = Math.hypot(tr.wrist.x - wx, tr.wrist.y - wy);
-                if (d < best) { best = d; track = tr; }
+                const gap = Math.max(0, now - tr.at);
+                const px = tr.wrist.x + tr.vx * gap;
+                const py = tr.wrist.y + tr.vy * gap;
+                const d = Math.hypot(px - wx, py - wy);
+                const radius = o.matchRadius + o.matchGrowth * (gap / 1000);
+                if (d < radius && d < best) { best = d; track = tr; }
             }
             const fresh = !track;
             if (fresh) {
-                track = { id: nextId++, filters: makeFilters(lm.length), at: now, born: now, wrist: { x: wx, y: wy } };
+                track = { id: nextId++, filters: makeFilters(lm.length), at: now, born: now, wrist: { x: wx, y: wy }, vx: 0, vy: 0 };
             }
-            const dt = fresh ? 0 : (now - track.at) / 1000;
+            const dtMs = fresh ? 0 : now - track.at;
+            const dt = dtMs / 1000;
             const landmarks = lm.map((p, i) => ({
                 x: track.filters[i][0](finite(p?.x), dt),
                 y: track.filters[i][1](finite(p?.y), dt),
                 z: track.filters[i][2](finite(p?.z), dt),
             }));
+            // Wrist velocity (units per ms) from the RAW wrist, for prediction only:
+            // the filtered one lags exactly when prediction matters.
+            if (dtMs > 0) {
+                track.vx = (wx - track.rawWrist.x) / dtMs;
+                track.vy = (wy - track.rawWrist.y) / dtMs;
+            }
+            track.rawWrist = { x: wx, y: wy };
             track.at = now;
-            track.wrist = landmarks[0];
+            track.wrist = { x: wx, y: wy };
             taken.add(track);
             out.push({ id: track.id, landmarks, world: hand.world || null, fresh, ageMs: now - track.born });
         }

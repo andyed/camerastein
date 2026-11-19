@@ -69,10 +69,17 @@ const NEGATIVES = {
     },
 };
 
-/** The poses a guided run walks through, bracketed by the two negatives. */
+/**
+ * The poses a guided run walks through, then the motions (hand-motion-channel.js),
+ * bracketed by the two negatives. Each motion's HOLD window is 8 s of repeating
+ * it; the replay counts events per window, so the held poses and negatives double
+ * as the motions' false-positive test.
+ */
 const GUIDED_SEQUENCE = [
     'away', 'idle', 'openPalm', 'fist', 'point', 'peace', 'horns',
-    'thumbsUp', 'thumbsDown', 'pray', 'idle', 'away',
+    'thumbsUp', 'thumbsDown', 'pray',
+    'swipe', 'pinch', 'spread', 'gather',
+    'idle', 'away',
 ];
 const READY_MS = 3000;
 const HOLD_MS = 8000;
@@ -108,6 +115,17 @@ export class HandLabRecorder {
         const bus = window.MotionBus;
         if (!bus?.subscribe) return;
 
+        // Motion events as the live channel fired them, so a replay can be
+        // checked against what actually happened on the day.
+        bus.subscribe('handMotion', (motion) => {
+            if (!motion?.events?.length) return;
+            this._push({
+                ch: 'motion',
+                t: r2(motion.t),
+                ev: motion.events.map((e) => ({ type: e.type, dir: e.dir, hand: e.handId })),
+            });
+        });
+
         // Raw detector output. `null` is the detector saying "no hands, and I
         // have stopped broadcasting" — worth a row of its own, since a pose that
         // "falls to 0 hands" is either this or MediaPipe returning nothing.
@@ -132,6 +150,9 @@ export class HandLabRecorder {
                 // accumulating megabytes of landmarks nobody asked for.
                 lm1: this.runId ? flatLandmarks(hand.landmarks) : undefined,
                 lm2: this.runId ? flatLandmarks(hand.landmarks2) : undefined,
+                // Metric 3D landmarks (pinch prefers them), same hand order.
+                wl1: this.runId ? flatLandmarks(hand.worldLandmarks) : undefined,
+                wl2: this.runId ? flatLandmarks(hand.worldLandmarks2) : undefined,
             });
         });
 

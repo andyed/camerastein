@@ -12,6 +12,7 @@ import { BenchmarkHarness } from './benchmark-harness.js';
 import { GestureLab } from './gesture-lab.js';
 import { initPrayChannel } from './lib/pray-channel.js';
 import { initHandPoseChannel } from './lib/hand-pose-channel.js';
+import { initHandMotionChannel } from './lib/hand-motion-channel.js';
 import { HandGestureLab, HAND_GESTURE_DEFINITIONS } from './hand-gesture-lab.js';
 import { HandLabRecorder } from './hand-lab-recorder.js';
 
@@ -40,6 +41,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // window.PrayGesture.status(); disable with window.__prayChannel = false.
     initPrayChannel();
     initHandPoseChannel();
+    // Swipes, pinch clicks, spread/gather. Inspect with window.HandMotion.status().
+    initHandMotionChannel();
     // Recorder before the lab, so the lab's guided-run button has one to drive.
     window.HandLabRecorder = new HandLabRecorder({
         labels: Object.fromEntries(Object.entries(HAND_GESTURE_DEFINITIONS)

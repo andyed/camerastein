@@ -41,6 +41,7 @@ import {
     HAND_POSE_IDS,
     HandPoseRecognizer,
 } from './lib/hand-pose-suite.js';
+import { HAND_MOTION_TYPES } from './lib/hand-motion-channel.js';
 
 /** Rolling window the lab tallies frame reasons over. */
 const REASON_WINDOW = 90;
@@ -93,6 +94,60 @@ function poseRehearsal(kind) {
 }
 
 /** Registry entries for the seven one-hand poses, generated from their specs. */
+/*
+ * A third family: motions (hand-motion-channel.js). What a hand DOES rather than
+ * what it IS, so like the strike they have no dwell or lifecycle, only events.
+ * Unlike the strike they need hand-first pacing (hand-pacing.js, ~15 Hz while a
+ * hand is in view); at the 2.5 Hz overlay rate they refuse rather than guess.
+ */
+const MOTION_CUES = {
+    swipe: 'Open hand, still a moment, then sweep it fast and level across the frame.',
+    pinch: 'Touch thumb to index and hold a beat, then open well apart before the next.',
+    spread: 'Both hands open and close together, then pull them apart quickly.',
+    gather: 'Both hands open and far apart, then bring them together quickly.',
+};
+const MOTION_ENTRIES = Object.fromEntries(HAND_MOTION_TYPES.map((kind) => [kind, {
+    label: kind === 'pinch' ? 'Pinch click' : kind[0].toUpperCase() + kind.slice(1),
+    family: 'motion',
+    version: 1,
+    render: 'transient',
+    hands: kind === 'spread' || kind === 'gather' ? 2 : 1,
+    channel: 'handMotion',
+    select: (payload) => (payload ? {
+        motion: true,
+        count: num(payload.counts?.[kind]),
+        last: payload.last?.[kind] ?? null,
+        t: num(payload.t),
+        hands: num(payload.hands),
+        handHz: payload.handHz,
+    } : null),
+    cue: MOTION_CUES[kind],
+    expected: [],
+    criteria: [],
+    diagnostic: null,
+    sliders: [],
+    switches: [],
+    host: () => null,
+    defaultConfig: { criteria: {} },
+    createRecognizer: null,
+    rehearsal: null,
+}]));
+
+/** 0..1 flash that decays over 1.2 s after a motion event, for the card meter. */
+function motionLevel(frame) {
+    const at = frame?.last?.t;
+    if (!Number.isFinite(at) || !Number.isFinite(frame?.t)) return 0;
+    return Math.max(0, 1 - (frame.t - at) / 1200);
+}
+
+function motionDetail(frame) {
+    const e = frame?.last;
+    if (!e) return '—';
+    if (e.type === 'swipe') return e.dir;
+    if (e.type === 'pinch') return `gap ${fmt(e.gap)}`;
+    return `${fmt(e.separation)} hand sizes`;
+}
+
 const POSE_ENTRIES = Object.fromEntries(HAND_POSE_IDS.map((kind) => {
     const spec = HAND_POSE_SPECS[kind];
     return [kind, {
@@ -172,6 +227,7 @@ export const HAND_GESTURE_DEFINITIONS = Object.freeze({
     },
 
     ...POSE_ENTRIES,
+    ...MOTION_ENTRIES,
 
     /*
      * Psychodeli+'s thumbs-up/down, shown beside the suite's own so the two can
@@ -376,11 +432,11 @@ export class HandGestureLab {
             const body = transient
                 ? `
                 <ul class="hlab-source hlab-transient">
-                    <li><span>${kind === 'strike' ? 'strikes' : 'direction'}</span><b data-strike-count="${kind}">0</b></li>
-                    <li><span>${kind === 'strike' ? 'peak / needed' : 'confidence'}</span><b data-strike-last="${kind}">\u2014</b></li>
+                    <li><span>${def.family === 'motion' ? 'fired' : (kind === 'strike' ? 'strikes' : 'direction')}</span><b data-strike-count="${kind}">0</b></li>
+                    <li><span>${def.family === 'motion' ? 'last' : (kind === 'strike' ? 'peak / needed' : 'confidence')}</span><b data-strike-last="${kind}">\u2014</b></li>
                 </ul>
                 <div class="hlab-gauge">
-                    <span>${kind === 'strike' ? 'energy' : 'charge'}</span>
+                    <span>${def.family === 'motion' ? 'flash' : (kind === 'strike' ? 'energy' : 'charge')}</span>
                     <div class="hlab-meter"><i data-meter="${kind}:energy"></i></div>
                     <b data-readout="${kind}:energy">0.00</b>
                 </div>`
@@ -430,17 +486,20 @@ export class HandGestureLab {
                     <p class="hlab-warning" data-warning="${kind}" hidden></p>
                     ${detail}
                     ${switches}
+                    ${def.sliders.length ? `
                     <details class="hlab-tuning">
                         <summary>live thresholds</summary>
                         ${sliders}
                         <button data-restore="${kind}">restore defaults</button>
-                    </details>
+                    </details>` : ''}
                 </div>
                 <code>${def.expected.length
                     ? def.expected.join(' \u2192 ')
-                    : (transient && kind === 'strike'
-                        ? 'no lifecycle \u2014 discrete hits'
-                        : 'no lifecycle \u2014 one latched confirmation')}</code>
+                    : (def.family === 'motion'
+                        ? 'no lifecycle \u2014 one event per stroke'
+                        : (transient && kind === 'strike'
+                            ? 'no lifecycle \u2014 discrete hits'
+                            : 'no lifecycle \u2014 one latched confirmation'))}</code>
             </article>`;
         }).join('');
 
@@ -823,6 +882,10 @@ export class HandGestureLab {
 
     /** Families with no dwell, no criteria and no lifecycle of their own. */
     _renderTransient(kind, frame, card, focused) {
+        if (HAND_GESTURE_DEFINITIONS[kind].family === 'motion') {
+            this._renderMotion(kind, frame, card, focused);
+            return;
+        }
         const isStrike = kind === 'strike';
         // The strike reports an energy envelope; the thumb confirmation reports
         // a charge toward commitment. Both are a 0..1 bar and two numbers, so
@@ -943,6 +1006,14 @@ export class HandGestureLab {
         const meter = this.hud.querySelector('[data-hud-meter]');
         const noteEl = this.hud.querySelector('[data-hud-note]');
 
+        if (def.render === 'transient' && def.family === 'motion') {
+            const level = motionLevel(frame);
+            phaseEl.textContent = level > 0.05 ? `${def.label.toUpperCase()} ${motionDetail(frame).toUpperCase()}` : 'idle';
+            phaseEl.dataset.state = level > 0.05 ? 'holding' : 'idle';
+            meter.style.width = `${level * 100}%`;
+            noteEl.textContent = !frame ? this._waitingNote(def) : `${Math.round(num(frame.count))} fired`;
+            return;
+        }
         if (def.render === 'transient') {
             const level = num(kind === 'strike' ? frame?.strikeEnergy : frame?.charge);
             phaseEl.textContent = level > 0.05 ? def.label.toUpperCase() : 'idle';
@@ -977,6 +1048,30 @@ export class HandGestureLab {
 
     _waitingNote(def) {
         return def.hands === 2 ? 'show both hands' : 'show a hand';
+    }
+
+    /** Motion cards: count, last event, a decaying flash, and why a card sits at zero. */
+    _renderMotion(kind, frame, card, focused) {
+        const level = motionLevel(frame);
+        card.classList.toggle('active', level > 0.05);
+        this.panel.querySelector(`[data-strike-count="${kind}"]`).textContent = `${Math.round(num(frame?.count))}`;
+        this.panel.querySelector(`[data-strike-last="${kind}"]`).textContent = motionDetail(frame);
+        this.panel.querySelector(`[data-meter="${kind}:energy"]`).style.width = `${level * 100}%`;
+        this.panel.querySelector(`[data-readout="${kind}:energy"]`).textContent = fmt(level);
+        if (!focused) return;
+
+        const warning = this.panel.querySelector(`[data-warning="${kind}"]`);
+        const def = HAND_GESTURE_DEFINITIONS[kind];
+        const hz = Number.isFinite(frame?.handHz) ? frame.handHz : null;
+        let note = '';
+        if (!frame || num(frame.hands) < def.hands) {
+            note = def.hands === 2 ? 'Needs both hands in view.' : 'No hand tracked.';
+        } else if (hz !== null && hz < 8) {
+            note = `Hands are sampled at ${fmt(hz, 1)} Hz. A motion is over in under half a second, so `
+                + 'it needs presence pacing (?pacing=presence, the default) or Hand mode on its own.';
+        }
+        warning.textContent = note;
+        warning.hidden = !note;
     }
 
     _renderSource() {

@@ -55,6 +55,18 @@ test('track ids follow the physical hand when the input order swaps', () => {
     assert.ok(b.every((h) => !h.fresh));
 });
 
+test('a fast swipe keeps its id: matching uses the predicted wrist, not the last one', () => {
+    const smooth = createHandSmoother();
+    const ids = new Set();
+    // 0.8 of the frame in 0.4 s at 15 Hz: 0.13 per sample, plus a parked second hand.
+    for (let k = 0; k <= 6; k++) {
+        const x = 0.1 + (0.8 * k) / 6;
+        const out = smooth([{ landmarks: hand(x, 0.4) }, { landmarks: hand(0.5, 0.85) }], k * (1000 / 15));
+        ids.add(out.find((h) => h.landmarks[0].y < 0.6).id);
+    }
+    assert.equal(ids.size, 1);
+});
+
 test('a short dropout keeps the track; a long one starts a new hand', () => {
     const smooth = createHandSmoother({ keepMs: 400 });
     const [first] = smooth([{ landmarks: hand(0.5, 0.5) }], 0);
