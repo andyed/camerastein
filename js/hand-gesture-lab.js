@@ -855,7 +855,7 @@ export class HandGestureLab {
         }
 
         // Three distinguishable reasons the count can sit at zero.
-        const hz = window.sharedCameraManager?.getTrackingStats?.()?.achieved?.hand?.hz;
+        const hz = window.SharedCameraManager?.getTrackingStats?.()?.achieved?.hand?.hz;
         if (!frame || num(frame.handCount) === 0) {
             warning.textContent = 'No hand tracked. Turn on Hand above and show a hand \u2014 '
                 + 'strikes are read off wrist movement, so nothing is measured until one is visible.';
@@ -899,7 +899,7 @@ export class HandGestureLab {
         if (!warning || !HAND_GESTURE_DEFINITIONS[kind].expected.length) return;
         const config = HAND_GESTURE_DEFINITIONS[kind].host()?.recognizer?.config
             || HAND_GESTURE_DEFINITIONS[kind].defaultConfig;
-        const hz = window.sharedCameraManager?.getTrackingStats?.()?.achieved?.hand?.hz;
+        const hz = window.SharedCameraManager?.getTrackingStats?.()?.achieved?.hand?.hz;
 
         let message = '';
         if (this.synthetic.has(kind)) {
@@ -985,7 +985,7 @@ export class HandGestureLab {
         // frame: the transient family carries no `quality` block at all, and
         // hands/confidence describe the camera, not any one gesture.
         const hand = window.MotionBus?.state?.hand ?? null;
-        const hz = window.sharedCameraManager?.getTrackingStats?.()?.achieved?.hand?.hz;
+        const hz = window.SharedCameraManager?.getTrackingStats?.()?.achieved?.hand?.hz;
 
         this.panel.querySelector('[data-src-hands]').textContent =
             String(Math.round(num(hand?.handCount)));
