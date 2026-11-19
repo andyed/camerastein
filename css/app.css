@@ -26,6 +26,16 @@ body {
     flex-shrink: 0;
 }
 
+/* The detectors' tracking indicator (#camera-indicator-container, injected by
+   the shared head/body/hand detectors) is fixed at top: 10px; right: 10px and
+   about 46px wide. Without room for it, whichever button ends the bar sits
+   underneath it and cannot be clicked once tracking starts (measured
+   2026-11-19 at 1400px: the button spanned x 1336-1384, the indicator
+   1344-1390). */
+body:has(#camera-indicator-container) #controls-bar {
+    padding-right: 72px;
+}
+
 #controls-bar h1 {
     font-size: 16px;
     font-weight: 600;
