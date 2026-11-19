@@ -56,6 +56,7 @@ const HAND_SHAPE_HINTS = {
     aspect: 'not edge-on to the camera',
     palmLengthRatio: 'palm not tipped toward or away from the lens',
     thumbUpness: '+1 up, −1 down',
+    thumbReach: 'thumb tip clear of the palm, in palm lengths',
     spread: 'smallest adjacent fingertip gap',
     pinch: 'thumb tip to index tip',
 };
@@ -531,6 +532,7 @@ export class HandGestureLab {
                 <button data-clear>clear events</button>
                 <button data-guided title="Cues each pose on the video and records every frame">guided run</button>
                 <button data-save-log title="Download everything recorded this session">save log</button>
+                <button data-miss title="It did not fire: save the last 3 s for the focused gesture as a test fixture (key m)">missed it</button>
             </div>
 
             <div class="hlab-cards">${cards}</div>
@@ -597,6 +599,18 @@ export class HandGestureLab {
         });
         this.panel.querySelector('[data-save-log]')?.addEventListener('click', () => {
             window.HandLabRecorder?.download();
+        });
+        // "Missed it": the last 3 s of hand frames for the focused gesture, saved as
+        // a fixture tests/hand-misses.test.js can replay. `m` does the same while
+        // the panel is open, so the hand can stay up.
+        const miss = () => window.HandLabRecorder?.captureMiss?.(this.focus);
+        this.panel.querySelector('[data-miss]')?.addEventListener('click', miss);
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'm' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+            if (e.target?.tagName === 'INPUT' || e.target?.tagName === 'TEXTAREA') return;
+            if (this.panel.classList.contains('collapsed')) return;
+            e.preventDefault();
+            miss();
         });
         this.panel.querySelector('[data-clear]')?.addEventListener('click', () => {
             this.events = [];

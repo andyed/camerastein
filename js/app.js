@@ -41,6 +41,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // window.PrayGesture.status(); disable with window.__prayChannel = false.
     initPrayChannel();
     initHandPoseChannel();
+    // The lab reads finger and thumb extension in palm lengths, so a close fist
+    // no longer reads as an extended thumb (hand-pose-detector.js). Shared code
+    // defaults it off; Psychodeli maps these signals onto visuals.
+    if (typeof window.__handExtensionScaleFree === 'undefined') window.__handExtensionScaleFree = true;
     // Swipes, pinch clicks, spread/gather. Inspect with window.HandMotion.status().
     initHandMotionChannel();
     // Recorder before the lab, so the lab's guided-run button has one to drive.
