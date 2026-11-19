@@ -8,7 +8,8 @@
  * Activated via: ?tasks-vision URL parameter
  */
 
-import { TasksVisionAdapter } from './tasks-vision/adapter.js';
+import { DispatchingAdapter } from './tasks-vision/dispatching-adapter.js';
+import { TasksVisionWorkerAdapter } from './tasks-vision/worker/worker-adapter.js';
 import { initBlendshapeChannel } from './tasks-vision/blendshape-channel.js';
 import { initFaceFeatureChannel } from './tasks-vision/face-feature-channel.js';
 import { initFaceGestureChannel } from './tasks-vision/face-gesture-channel.js';
@@ -23,8 +24,23 @@ const debug = {
 const noopCollector = { recordPulse() {} };
 const noopBus = { state: {}, emit() {}, subscribe() { return () => {}; } };
 
-// Create adapter and loader factories
-const adapter = new TasksVisionAdapter();
+// Transport: inference runs in a Web Worker by default, so hand tracking can be
+// given its own frame budget without stalling the page (roadmap item
+// hands-first-tracking). Psychodeli's DispatchingAdapter decides once per camera
+// start and latches to inline for the session if the worker fails. ?worker=0
+// (or window.__mediapipeWorker = false before load) forces inline for an A/B.
+// Psychodeli itself defaults the worker on only in Electron dev and on iOS; the
+// lab defaults it on because measuring it is the point.
+{
+    const q = new URLSearchParams(location.search).get('worker');
+    if (q === '0' || q === 'false') window.__mediapipeWorker = false;
+    else if (typeof window.__mediapipeWorker === 'undefined') window.__mediapipeWorker = true;
+}
+const adapter = new DispatchingAdapter({
+    workerAdapterFactory: (opts) => new TasksVisionWorkerAdapter(opts),
+});
+// Diagnostics: which transport this session actually runs ({transport, fallbackReason, ...}).
+window.__mediapipeTransport = () => adapter.describe();
 
 window.SharedCameraManager.init({
     headDetector:    window.HeadBobDetector,
