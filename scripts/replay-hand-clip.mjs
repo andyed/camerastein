@@ -16,6 +16,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HAND_POSE_IDS, createHandPoseRecognizers } from '../js/lib/hand-pose-suite.js';
+import { createHandSmoother } from '../js/lib/hand-smoother.js';
+import { createMotionGestures } from '../js/lib/motion-gesture-recognizer.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const clipsDir = join(root, 'logs', 'clips');
@@ -73,4 +75,39 @@ for (const [cue, { n, active, reasons }] of byCue) {
         .map(([reason, count]) => `${reason} ${pct(count, n)}`).join(', ');
     console.log(`${cue.padEnd(11)} n=${String(n).padStart(3)}  active: ${on}`);
     if (why) console.log(`${''.padEnd(18)}own: ${why}`);
+}
+
+// ── Motion gestures ────────────────────────────────────────────────────────
+// The same hand rows through the One Euro smoother and the motion recognizers
+// (swipe, pinch, spread, gather). Counted per cue across READY and HOLD, since a
+// motion is an event, not a held state. A motion cue should fire its own type;
+// every other cue, held poses and negatives alike, is a false-positive test.
+const smoother = createHandSmoother();
+const motions = createMotionGestures();
+const motionByCue = new Map();
+const motionCueOrder = [];
+for (const row of rows) {
+    if (!Number.isFinite(row.t)) continue;
+    const hands = row.nul || !(row.n > 0)
+        ? []
+        : [
+            row.lm1 ? { landmarks: unflatten(row.lm1), world: unflatten(row.wl1) } : null,
+            row.lm2 ? { landmarks: unflatten(row.lm2), world: unflatten(row.wl2) } : null,
+        ].filter(Boolean);
+    const events = motions.update(row.t, smoother(hands, row.t));
+    const cue = row.cue ?? '(none)';
+    if (!motionByCue.has(cue)) { motionByCue.set(cue, {}); motionCueOrder.push(cue); }
+    const bucket = motionByCue.get(cue);
+    for (const e of events) {
+        const key = e.type === 'swipe' ? `swipe-${e.dir}` : e.type;
+        bucket[key] = (bucket[key] || 0) + 1;
+    }
+}
+const recorded = readFileSync(join(clip, 'rows.jsonl'), 'utf8')
+    .split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    .filter((row) => row.ch === 'motion').length;
+console.log(`\nmotion gestures (replayed; ${recorded} live motion rows in the clip)`);
+for (const cue of motionCueOrder) {
+    const fired = Object.entries(motionByCue.get(cue)).map(([k, n]) => `${k} ${n}`).join(', ') || 'nothing';
+    console.log(`${cue.padEnd(11)} ${fired}`);
 }

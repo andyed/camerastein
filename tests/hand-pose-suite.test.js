@@ -58,7 +58,7 @@ test('the suite registers every pose the lab expects', () => {
 test('no two poses can match the same hand', () => {
     // Exclusivity is a property of the declarations, not of a runtime priority
     // rule. If this fails, two poses overlap and one of them needs a criterion
-    // the other does not satisfy — a fist requires a tucked thumb for exactly
+    // the other does not satisfy — a fist requires the thumb kept in (reach) for exactly
     // this reason, so that a thumbs-up is not also a fist.
     for (const kind of HAND_POSE_IDS) {
         assert.deepEqual(matchingPoses(handFor(kind)), [kind],

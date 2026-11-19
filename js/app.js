@@ -12,6 +12,9 @@ import { BenchmarkHarness } from './benchmark-harness.js';
 import { GestureLab } from './gesture-lab.js';
 import { initPrayChannel } from './lib/pray-channel.js';
 import { initHandPoseChannel } from './lib/hand-pose-channel.js';
+import { initHandMotionChannel } from './lib/hand-motion-channel.js';
+import { initPersonMaskChannel } from './lib/person-mask-channel.js';
+import { initMaskDemo } from './mask-demo.js';
 import { HandGestureLab, HAND_GESTURE_DEFINITIONS } from './hand-gesture-lab.js';
 import { HandLabRecorder } from './hand-lab-recorder.js';
 
@@ -40,6 +43,15 @@ document.addEventListener('DOMContentLoaded', () => {
     // window.PrayGesture.status(); disable with window.__prayChannel = false.
     initPrayChannel();
     initHandPoseChannel();
+    // The lab reads finger and thumb extension in palm lengths, so a close fist
+    // no longer reads as an extended thumb (hand-pose-detector.js). Shared code
+    // defaults it off; Psychodeli maps these signals onto visuals.
+    if (typeof window.__handExtensionScaleFree === 'undefined') window.__handExtensionScaleFree = true;
+    // Swipes, pinch clicks, spread/gather. Inspect with window.HandMotion.status().
+    initHandMotionChannel();
+    // Person mask: loads nothing until something subscribes (the header's mask button).
+    initPersonMaskChannel();
+    initMaskDemo();
     // Recorder before the lab, so the lab's guided-run button has one to drive.
     window.HandLabRecorder = new HandLabRecorder({
         labels: Object.fromEntries(Object.entries(HAND_GESTURE_DEFINITIONS)

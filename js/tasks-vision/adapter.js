@@ -17,16 +17,11 @@
 import { FaceLandmarkerShim } from './face-shim.js';
 import { PoseLandmarkerShim } from './pose-shim.js';
 import { HandLandmarkerShim } from './hand-shim.js';
+import { MODEL_URLS, VISION_BUNDLE, WASM_BASE } from './runtime-config.js';
 
-const WASM_CDN = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm';
-const MODEL_BASE = 'https://storage.googleapis.com/mediapipe-models';
-
-const MODEL_URLS = {
-    face: `${MODEL_BASE}/face_landmarker/face_landmarker/float16/1/face_landmarker.task`,
-    poseLite: `${MODEL_BASE}/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task`,
-    poseHeavy: `${MODEL_BASE}/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task`,
-    hands: `${MODEL_BASE}/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
-};
+// Asset URLs live in runtime-config.js so the inline adapter and the worker
+// transport resolve byte-identical paths from ONE definition. See that file for
+// the vendoring rationale and the pinned version.
 
 export class TasksVisionAdapter {
     constructor() {
@@ -56,16 +51,35 @@ export class TasksVisionAdapter {
         if (this._vision) return this._vision;
         if (this._visionPromise) return this._visionPromise;
 
-        this._visionPromise = (async () => {
-            // Dynamic import from CDN
-            this._tasksVision = await import(
-                'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/vision_bundle.mjs'
-            );
-            this._vision = await this._tasksVision.FilesetResolver.forVisionTasks(WASM_CDN);
-            return this._vision;
+        const p = (async () => {
+            // Dynamic import + WASM fileset, now served from the LOCAL vendor dir (see
+            // VENDOR_BASE) so camera init no longer touches the network. The bounded
+            // retry is retained as cheap insurance against a transient fetch hiccup
+            // (e.g. the dev HTTP server still warming up) before surfacing the failure.
+            let lastErr;
+            for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                    this._tasksVision = await import(VISION_BUNDLE);
+                    this._vision = await this._tasksVision.FilesetResolver.forVisionTasks(WASM_BASE);
+                    return this._vision;
+                } catch (e) {
+                    lastErr = e;
+                    window.debugManager?.warn?.(`tasks-vision load attempt ${attempt + 1} failed: ${e?.message || e}`);
+                    await new Promise(r => setTimeout(r, 250 * (attempt + 1)));
+                }
+            }
+            throw lastErr;
         })();
 
-        return this._visionPromise;
+        this._visionPromise = p;
+        // Don't let a transient CDN failure POISON the dedup cache: a rejected
+        // _visionPromise would otherwise be returned to every future caller (the
+        // early-return above), turning one flaky network hiccup into a PERMANENT
+        // camera-init failure until page reload. Clear it on rejection so the next
+        // toggle/retry rebuilds. Guard against nulling a newer promise.
+        p.catch(() => { if (this._visionPromise === p) this._visionPromise = null; });
+
+        return p;
     }
 
     /**
@@ -110,10 +124,11 @@ export class TasksVisionAdapter {
                 }
 
                 window.debugManager?.info?.(`FaceLandmarker loaded (${delegate} delegate)`);
+                // Pass the RESOLVED delegate — after any GPU->CPU fallback above — so
+                // telemetry reports what actually loaded, not what was requested.
                 shim = new FaceLandmarkerShim(landmarker, {
-                    // MediaPipe's public constant keeps the historical
-                    // TESSELATION misspelling. Camerastein's provider-neutral
-                    // payload uses the conventional spelling instead.
+                    // MediaPipe's exported constant keeps its historical misspelling;
+                    // the portable Camerastein/Psychodeli contract does not.
                     tessellation: FaceLandmarker.FACE_LANDMARKS_TESSELATION,
                     contours: FaceLandmarker.FACE_LANDMARKS_CONTOURS,
                     faceOval: FaceLandmarker.FACE_LANDMARKS_FACE_OVAL,
@@ -124,7 +139,7 @@ export class TasksVisionAdapter {
                     rightEyebrow: FaceLandmarker.FACE_LANDMARKS_RIGHT_EYEBROW,
                     leftIris: FaceLandmarker.FACE_LANDMARKS_LEFT_IRIS,
                     rightIris: FaceLandmarker.FACE_LANDMARKS_RIGHT_IRIS,
-                });
+                }, delegate);
                 this.loaded = true;
                 this.loading = false;
                 return shim;
@@ -180,7 +195,7 @@ export class TasksVisionAdapter {
                 }
 
                 window.debugManager?.info?.(`PoseLandmarker loaded (${delegate} delegate, ${options.heavy ? 'heavy' : 'lite'})`);
-                shim = new PoseLandmarkerShim(landmarker);
+                shim = new PoseLandmarkerShim(landmarker, delegate);
                 this.loaded = true;
                 this.loading = false;
                 return shim;
@@ -233,7 +248,7 @@ export class TasksVisionAdapter {
                 }
 
                 window.debugManager?.info?.(`HandLandmarker loaded (${delegate} delegate)`);
-                shim = new HandLandmarkerShim(landmarker);
+                shim = new HandLandmarkerShim(landmarker, delegate);
                 this.loaded = true;
                 this.loading = false;
                 return shim;

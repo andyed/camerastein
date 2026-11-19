@@ -14,7 +14,7 @@
         <button class="toggle-btn" id="btn-body" data-mode="body">Body</button>
         <button class="toggle-btn" id="btn-hand" data-mode="hand">Hand</button>
         <select id="camera-select"><option value="">Camera...</option></select>
-        <label id="overlay-toggle" style="display:flex;align-items:center;gap:4px;font-size:12px;color:#888;cursor:pointer;">
+        <label id="overlay-toggle" style="display:flex;align-items:center;gap:4px;font-size:12px;color:#d2cee2;cursor:pointer;">
             <input type="checkbox" id="cb-video-overlay" checked> video
         </label>
         <span id="mode-indicator"></span>
@@ -22,6 +22,7 @@
         <span id="fps-display">-- fps</span>
         <button id="gesture-lab-toggle" aria-expanded="false" aria-controls="gesture-lab-panel">gestures</button>
         <button id="hand-lab-toggle" aria-expanded="false" aria-controls="hand-lab-panel">hands</button>
+        <button id="mask-toggle" aria-pressed="false" title="Person mask: a cut-out preview from the selfie segmenter">mask</button>
         <button id="benchmark-toggle">bench</button>
     </div>
 
@@ -73,6 +74,7 @@
     <script src="js/lib/camera-machine.js"></script>
     <script src="js/lib/camera-resource-policy.js"></script>
     <script src="js/lib/camera-tracking-stats.js"></script>
+    <script src="js/lib/hand-pacing.js"></script>
     <script src="js/lib/shared-camera-manager.js"></script>
     <script src="js/lib/head-bob-detector.js"></script>
     <script src="js/lib/head-bob-detector-mouth-tracking.js"></script>

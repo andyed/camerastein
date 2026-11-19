@@ -89,6 +89,10 @@ class SharedCameraManager {
         // Alternates primary/hand across paced ticks instead of starving hands to
         // ~0.83Hz on mobile. Monotonic tick counter drives the slot phase.
         this._pacedTick = 0;
+        // Presence pacing (js/lib/hand-pacing.js), used only while
+        // window.__handPacing === 'presence'. Created lazily so a host that never
+        // loads hand-pacing.js pays nothing and keeps the schedulers above.
+        this._handPacer = null;
         // Per-channel inference latency + achieved rate. Always on: it is the only
         // way mobile pacing is observable (headless has no camera), and it is what
         // validates the interleave change on a real device via getTrackingStats().
@@ -145,6 +149,11 @@ class SharedCameraManager {
         // NOTE: `permissions` (the desired {head,body,hand} config) is a getter
         // over machine state — see below. There is no flag object to drift.
 
+        // Native iOS capture (docs/IOS_NATIVE_VISION.md §1, §6). Non-null only while the
+        // PsychodeliVision plugin owns the camera: { running, wants:{face,hands,body} }.
+        this._nativeSession = null;
+        this._nativeStatusUnsub = null;
+
         // Dependencies injected via init() after all scripts load
         this._deps = {};
     }
@@ -175,6 +184,178 @@ class SharedCameraManager {
 
     /** Machine phase: idle | acquiring | running | switching | stopping. */
     get phase() { return this._machine.state.phase; }
+
+    // ------------------------------------------------------------------
+    // Native capture (iOS PsychodeliVision plugin). docs/IOS_NATIVE_VISION.md §1, §6.
+    // ------------------------------------------------------------------
+
+    /**
+     * True when the camera belongs to the native plugin rather than getUserMedia.
+     *
+     * Asks the dispatcher (injected as `visionTransport`) rather than reading a loader's
+     * `transport`, because a loader only knows its transport AFTER load() resolves, and
+     * this answer is needed before any model loads: isAvailable() runs inside
+     * initialize(), and the hand-only fast path calls _startStream() before it loads
+     * anything. peekTransport() returns the committed choice, or the one the next load
+     * would make — the same decision, read early. Absent the dep (Camerastein, tests,
+     * older hosts) it is false and every native branch below is dead code.
+     */
+    get _nativeCapture() {
+        const vt = this._dep('visionTransport');
+        if (!vt) return false;
+        try {
+            const t = vt.transport || (typeof vt.peekTransport === 'function' ? vt.peekTransport() : null);
+            return t === 'native';
+        } catch (_) {
+            return false;
+        }
+    }
+
+    _nativeVision() { return this._dep('NativeVision') || null; }
+
+    /**
+     * May this mode be enabled at all? CameraFeatureFlags ships iOS head-only because
+     * the bundle carries face_landmarker.task alone. Native capture does not need those
+     * assets — Vision runs hands/body on the device — so under native capture the hand
+     * (and, once measured, body) gate defers to the __nativeVisionHands /
+     * __nativeVisionBody flags instead. A camera-less device stays off either way.
+     */
+    _modeAllowed(mode) {
+        const ff = window.CameraFeatureFlags;
+        if (!ff || ff[mode] !== false) return true;
+        if (window.Platform?.can?.camera === false || mode === 'head') return false;
+        if (!this._nativeCapture) return false;
+        return mode === 'hand' ? window.__nativeVisionHands !== false : window.__nativeVisionBody === true;
+    }
+
+    /** Machine config → plugin channels. Body/hands run only when the target needs them. */
+    _nativeWantsFor(target) {
+        const t = target || this._machine.state.live || {};
+        return {
+            face: t.primary === 'head',
+            hands: !!(t.overlay || t.primary === 'hand'),
+            body: t.primary === 'body',
+        };
+    }
+
+    /**
+     * Start (or retune) the native session for `target`. A running session is retuned
+     * with setOptions — a mode switch or hand overlay toggle must not bounce the ARSession
+     * (that is a visible camera-light flicker and a ~0.5s tracking gap).
+     */
+    async _nativeStart(target) {
+        const nv = this._nativeVision();
+        if (!nv?.available) {
+            const e = new Error('PsychodeliVision plugin not available');
+            e.code = 'unsupported';
+            throw e;
+        }
+        const wants = this._nativeWantsFor(target);
+        if (this._nativeSession?.running) {
+            const w = this._nativeSession.wants;
+            if (w.face === wants.face && w.hands === wants.hands && w.body === wants.body) return;
+            this._lifecycle('native-retune', `face=${wants.face} hands=${wants.hands} body=${wants.body}`);
+            try {
+                await nv.setOptions(wants);
+                this._nativeSession.wants = wants;
+            } catch (err) {
+                // Retune failure leaves the old channels running; tracking degrades, the
+                // camera does not die. Surface it rather than tearing the session down.
+                this._dep('debugManager')?.warn?.('Native vision setOptions failed:', err?.message || String(err));
+            }
+            return;
+        }
+        this._lifecycle('native-starting', `face=${wants.face} hands=${wants.hands} body=${wants.body}`);
+        this._watchNativeStatus(nv);
+        const res = await nv.start({ ...wants, synthetic: window.__nativeVisionSynthetic === true });
+        this._nativeSession = { running: true, wants };
+        this._lifecycle('native-started', `backend=${res?.backend ?? '?'}`);
+    }
+
+    /**
+     * A plugin `fatal` ends the generation exactly like a fatal frame error does on the
+     * pumped transports: FATAL → stop effect → models unloaded. The dispatcher has
+     * already latched native off (its adapter watches the same event), so the next
+     * camera start lands on the worker.
+     */
+    _watchNativeStatus(nv) {
+        if (this._nativeStatusUnsub || typeof nv?.onStatus !== 'function') return;
+        this._nativeStatusUnsub = nv.onStatus((s) => {
+            if (!s || !s.event) return;
+            this._lifecycle('native-status', s.event + (s.message ? `: ${s.message}` : ''));
+            if (s.event === 'fatal' && this._nativeSession) {
+                // _nativeSession stays set so the stop effect still calls stop():
+                // idempotent on the plugin side, and it releases whatever a half-dead
+                // session still holds.
+                this._commandQueued({ type: 'FATAL', message: s.message || 'native vision fatal' });
+            }
+        });
+    }
+
+    /**
+     * NativeVision.start() rejected. Decide whether to latch to the next transport (§1.3).
+     * Returns true when latched — the caller then falls through to getUserMedia.
+     *
+     * Two rejections are NOT transport failures and do not latch: permission-denied (the
+     * same camera permission gates getUserMedia, so falling back just fails twice and
+     * loses the 'denied' classification the UI needs) and camera-busy (the rear LiDAR
+     * session holds the camera — a contention, not an incapacity).
+     */
+    async _nativeStartFailed(err) {
+        const code = err?.code || '';
+        this._lifecycle('native-start-failed', `${code}: ${err?.message || err}`);
+        if (code === 'permission-denied') {
+            const e = new Error('Camera permission denied');
+            e.name = 'NotAllowedError';
+            e._errClass = 'denied';
+            throw e;
+        }
+        if (code === 'camera-busy') throw err;
+        const vt = this._dep('visionTransport');
+        if (typeof vt?.markNativeUnavailable !== 'function') throw err;
+        vt.markNativeUnavailable(code || 'native-start-failed', err);
+        await this._reloadModelsAfterLatch();
+        return true;
+    }
+
+    /**
+     * Models already loaded on the native transport would never receive a frame from
+     * getUserMedia. Release them and load the same set again — the dispatcher now picks
+     * worker/inline. Missing assets (the iOS bundle ships face only) degrade the way
+     * they always have: the model returns null and the hand wish is trimmed.
+     */
+    async _reloadModelsAfterLatch() {
+        const had = { face: this.faceMeshLoaded, pose: this.poseLoaded, hand: this.handsLoaded };
+        try { this._dep('MediaPipeLoader')?.unload?.(); } catch (_) { }
+        try { this._dep('PoseLoader')?.unload?.(); } catch (_) { }
+        try { this._dep('HandsLoader')?.unload?.(); } catch (_) { }
+        this.faceMesh = null; this.pose = null; this.hands = null;
+        this.faceMeshLoaded = false; this.poseLoaded = false; this.handsLoaded = false;
+        if (had.face) { this.faceMesh = await this._loadFaceMesh(); this.faceMeshLoaded = !!this.faceMesh; }
+        if (had.pose) { this.pose = await this._loadPose(); this.poseLoaded = !!this.pose; }
+        if (had.hand) { this.hands = await this._loadHands(); this.handsLoaded = !!this.hands; }
+    }
+
+    /**
+     * Synchronous diagnostics snapshot: status + which transport owns the camera.
+     * nativeStatus is the bridge's last-seen Status (the plugin call is async and this
+     * must not be).
+     */
+    getDebugSnapshot() {
+        const vt = this._dep('visionTransport');
+        let transport = null;
+        try { transport = vt?.describe?.() ?? null; } catch (_) { transport = null; }
+        const native = this._nativeCapture;
+        return {
+            ...this.getStatus(),
+            transport: native ? 'native' : (transport?.transport ?? null),
+            transportDetail: transport,
+            nativeSession: this._nativeSession ? { ...this._nativeSession, wants: { ...this._nativeSession.wants } } : null,
+            nativeStatus: native ? (this._nativeVision()?.lastStatus ?? null) : null,
+            machineViolations: (this._machine.violations || []).length,
+            lifecycleTail: (this.lifecycleLog || []).slice(-12),
+        };
+    }
 
     /**
      * Inject dependencies. Called from motion-init.js after all singletons exist.
@@ -268,7 +449,7 @@ class SharedCameraManager {
      */
     async togglePermission(mode) {
         if (mode !== 'head' && mode !== 'body' && mode !== 'hand') return;
-        if (window.CameraFeatureFlags && window.CameraFeatureFlags[mode] === false) {
+        if (!this._modeAllowed(mode)) {
             window.debugManager?.info?.('[Camera] ' + mode + ' tracking disabled by feature flag — ignoring toggle');
             return;
         }
@@ -285,7 +466,7 @@ class SharedCameraManager {
      */
     async setModeDesired(mode, on) {
         if (mode !== 'head' && mode !== 'body' && mode !== 'hand') return { ok: false };
-        if (window.CameraFeatureFlags && window.CameraFeatureFlags[mode] === false) {
+        if (!this._modeAllowed(mode)) {
             // Feature-flagged off (e.g. hand/body on iOS v1). Treat as a settled no-op so
             // permalink/Electron auto-retry doesn't loop trying to enable a disabled mode.
             return { ok: true, noop: true, disabled: true };
@@ -463,7 +644,7 @@ class SharedCameraManager {
                 this.active = true;
             }
 
-            await this._startStream();
+            await this._startStream(target);
             await this._ensureModelsFor(target);
 
             if (target.overlay || target.primary === 'hand') {
@@ -527,7 +708,9 @@ class SharedCameraManager {
                     degraded.push('hand');
                 }
             }
-            await this._startStream(); // no-op while the stream lives; heals a dead one
+            // No-op while the stream lives; heals a dead one. Under native capture this
+            // retunes the running session's channels instead (no ARSession bounce).
+            await this._startStream(to);
 
             if (eff.opSeq !== this._machine.state.opSeq) {
                 this._lifecycle('abort-superseded', `apply op${eff.opSeq}`);
@@ -593,11 +776,13 @@ class SharedCameraManager {
         if (fromHand && !toHand) {
             this._handOverlayCallback = null;
             this._handFrameCounter = 0;
+            this._handPacer?.reset?.();
             this._dep('handDetector')?._deactivate?.();
             this._dep('debugManager')?.logTransition?.('hand', 'overlay-stopped');
         } else if (toHand && !fromHand) {
             this._handOverlayCallback = this._dep('handDetector')?._onResults || null;
             this._handFrameCounter = 0;
+            this._handPacer?.reset?.();
             this._dep('handDetector')?._activate?.();
             this._dep('debugManager')?.logTransition?.('hand', 'overlay-started', { frameSkip: this._handFrameSkip });
         }
@@ -711,6 +896,10 @@ class SharedCameraManager {
      * Check if camera is available
      */
     isAvailable() {
+        // Native capture needs neither getUserMedia nor WebGL: ARKit owns the camera and
+        // inference runs on the device. Checked first because WKWebView can expose
+        // getUserMedia while the plugin is the owner we actually want.
+        if (this._nativeCapture && this._nativeVision()?.available) return true;
         if (!navigator.mediaDevices?.getUserMedia) {
             this._dep('debugManager')?.warn?.('SharedCameraManager: getUserMedia not supported');
             return false;
@@ -814,6 +1003,11 @@ class SharedCameraManager {
                 event, ...(detail ? { detail } : {})
             });
             if (this.lifecycleLog.length > 80) this.lifecycleLog.shift();
+            // Under native capture mirror the ring into the device syslog (plugin `trace`): the
+            // iOS app has no renderer console, and this is how a stalled retune gets diagnosed.
+            if (this._nativeSession || this._nativeCapture) {
+                this._nativeVision()?.trace?.(detail ? `${event} ${detail}` : event);
+            }
         } catch (_) { }
     }
 
@@ -840,7 +1034,10 @@ class SharedCameraManager {
         // on native just 404s and spams fetch retries. Skip it — head tracking is unaffected, and
         // body already doesn't work on native, so this is no behaviour change (just less noise).
         // Web/desktop still preload pose as before.
-        if (!(typeof window !== 'undefined' && window.__PSYDELI_NATIVE_BUILD)) {
+        // Native capture (docs/IOS_NATIVE_VISION.md) changes the premise: no asset to
+        // fetch, a pose "model" is just a registered callback. Preload it there so a body
+        // toggle (when __nativeVisionBody allows one) skips _ensureModelsFor's 1.5s retry.
+        if (!(typeof window !== 'undefined' && window.__PSYDELI_NATIVE_BUILD) || this._nativeCapture) {
             this._dep('debugManager')?.logTransition('camera', 'model-load-pose', null, { minIntervalMs: 300 });
             if (!this.poseLoaded && this._dep('commandRegistry')?.showParameterIndicator) {
                 this._dep('commandRegistry').showParameterIndicator('Loading Body Tracking...', true, window.ToastPolicy?.TRANSPORT);
@@ -862,9 +1059,25 @@ class SharedCameraManager {
         });
     }
 
-    async _startStream() {
+    /**
+     * @param {{primary, overlay}} [target] machine config being acquired/applied. Only the
+     *   native branch reads it (to pick plugin channels); the getUserMedia ladder ignores it.
+     */
+    async _startStream(target) {
         if (this.stream && this.videoElement) {
             return;
+        }
+
+        // Native capture (§1.1): the plugin owns the front camera; getUserMedia is never
+        // called and videoElement stays null. A start failure that latches (§1.3) falls
+        // through to the ladder below with models already reloaded on the next transport.
+        if (this._nativeCapture) {
+            try {
+                await this._nativeStart(target);
+                return;
+            } catch (err) {
+                await this._nativeStartFailed(err);   // throws unless latched
+            }
         }
 
         this._lifecycle('stream-starting');
@@ -1159,6 +1372,16 @@ class SharedCameraManager {
     }
 
     _stopStream() {
+        // Stop means the camera light goes off (§1.4) — every stop path lands here, so
+        // the ARSession ends on every camera-off even though models stay cached. Keyed on
+        // the session, not on _nativeCapture, so a session started before a latch is
+        // still stopped after it. Fire-and-forget: callers are synchronous and the bridge
+        // stop() never rejects.
+        if (this._nativeSession) {
+            this._lifecycle('native-stopped');
+            this._nativeSession = null;
+            try { this._nativeVision()?.stop?.(); } catch (_) { }
+        }
         if (this.stream || this.videoElement) this._lifecycle('stream-stopped');
         if (this.stream) {
             this.stream.getTracks().forEach(track => track.stop());
@@ -1247,6 +1470,33 @@ class SharedCameraManager {
                 this._trackingStats?.record?.(channel, roundTripMs);
             }
         }
+        // Returned for the presence pacer, which reads outcome.resultCount (hands
+        // in the result). Existing callers ignore it.
+        return outcome;
+    }
+
+    /**
+     * Presence pacing (js/lib/hand-pacing.js): hands every tick while one was seen
+     * recently, the primary on a watchdog; hands scouting otherwise. Opt-in with
+     * window.__handPacing = 'presence'. Like interleave, it only applies when hands
+     * share the pumped loop with a primary detector, and it takes precedence over
+     * interleave when both are set.
+     */
+    _presencePacingActive() {
+        return window.__handPacing === 'presence'
+            && !!window.CameraHandPacing
+            && !this._nativeCapture
+            && this._handOverlayActive
+            && !this._handSuspended
+            && !this._handPrimaryMode
+            && !!this.activeMode;
+    }
+
+    _getHandPacer() {
+        if (!this._handPacer && window.CameraHandPacing) {
+            this._handPacer = window.CameraHandPacing.createHandPacer(window.__handPacingOptions || undefined);
+        }
+        return this._handPacer;
     }
 
     /**
@@ -1258,7 +1508,10 @@ class SharedCameraManager {
         // device yet. Flip =true on-device, read getTrackingStats(), then graduate.
         // _handSuspended check: once hand errors suspend the model, hand slots would
         // run nothing — fall back to skip mode so the primary keeps every tick.
+        // Interleave is a pumped-loop scheduler; under native capture the plugin paces
+        // each channel itself, so report the plain scheduler.
         return window.__handInterleave === true
+            && !this._nativeCapture
             && this._handOverlayActive
             && !this._handSuspended
             && !this._handPrimaryMode
@@ -1268,15 +1521,20 @@ class SharedCameraManager {
     /** Planned vs achieved rates — the readout for validating pacing changes on-device. */
     getTrackingStats() {
         const policy = window.CameraResourcePolicy;
-        const interleaved = this._interleaveActive();
-        const planned = policy?.plannedRates?.(
-            this.targetFPS,
-            interleaved ? 'interleave' : 'skip',
-            window.__handInterleaveRatio ?? 2,
-            this._handFrameSkip
-        ) || null;
+        const presence = this._presencePacingActive() && !!this._handPacer;
+        const interleaved = !presence && this._interleaveActive();
+        const planned = presence
+            ? this._handPacer.plannedRates(this.targetFPS)
+            : (policy?.plannedRates?.(
+                this.targetFPS,
+                interleaved ? 'interleave' : 'skip',
+                window.__handInterleaveRatio ?? 2,
+                this._handFrameSkip
+            ) || null);
         return {
-            scheduler: interleaved ? 'interleave' : 'skip',
+            scheduler: presence ? 'presence' : (interleaved ? 'interleave' : 'skip'),
+            // Presence pacing's phase ('present' | 'scouting') and transition count.
+            pacing: presence ? this._handPacer.state() : null,
             targetFPS: this.targetFPS,
             constrained: this._resourceConstrained,
             planned,
@@ -1310,6 +1568,9 @@ class SharedCameraManager {
                         height: Number(this.videoElement?.videoHeight) || 0,
                     },
                     t: performance.now(),
+                    // Native subset frames tag their landmark arrays (non-enumerable);
+                    // forward it so a geometry consumer reading THIS emit also skips.
+                    ...(landmarks.sparse === true ? { sparse: true } : {}),
                 } : null);
                 if (this.activeMode === 'head' && this.onFaceMeshResults) {
                     this.onFaceMeshResults(results);
@@ -1462,6 +1723,9 @@ class SharedCameraManager {
      */
     _beginBodyProbe(isAutoSwitch, windowMs) {
         if (this.isProbingBody) return;
+        // The probe borrows pumped pose frames inside a face-mode loop; native capture
+        // has no such loop (and runs body only when body is the primary). Inert there.
+        if (this._nativeCapture) return;
         if (!this.permissions.head || !this.permissions.body) return;
         if (this.phase !== 'running' || this.activeMode !== 'head') return;
         if (!this.poseLoaded || !this.pose) return;
@@ -1543,6 +1807,12 @@ class SharedCameraManager {
      * Frame processing loop
      */
     _startFrameLoop() {
+        // Native capture pushes results from the plugin's own cadence (ARKit 60 Hz,
+        // coalesced per channel natively). There is nothing to pump: no video element, no
+        // send(). Return once rather than spinning a rAF that re-checks every frame;
+        // _attachConfig calls back here on every reconfigure, so a later latch to a
+        // pumped transport still starts the loop on its next attach.
+        if (this._nativeCapture) return;
         const processFrame = async () => {
             if (!this.activeMode && !this._handOverlayActive) {
                 // No active mode and no overlay — stop loop.
@@ -1614,7 +1884,9 @@ class SharedCameraManager {
                 // Interleave: this paced tick belongs to EITHER the primary detector or
                 // hands, never both. Without it, hands are starved to targetFPS/skip
                 // (~0.83Hz on mobile). The slot phase advances once per paced tick.
-                const interleaved = this._interleaveActive();
+                // Presence pacing, when on, decides both slots and overrides interleave.
+                const pacing = this._presencePacingActive() ? this._getHandPacer()?.tick(now) : null;
+                const interleaved = !pacing && this._interleaveActive();
                 const slot = interleaved
                     ? (window.CameraResourcePolicy?.interleaveSlot(
                         this._pacedTick++, window.__handInterleaveRatio ?? 2) || 'primary')
@@ -1622,8 +1894,13 @@ class SharedCameraManager {
                 // The body probe assumes CONSECUTIVE pose frames for its velocity math
                 // (dt ~50ms, see _beginBodyProbe). Interleaving would halve that and
                 // skew wristVelocity, so the probe window suspends interleave entirely.
-                const primarySlot = !interleaved || slot === 'primary' || this.isProbingBody;
-                const handSlot = !interleaved || (slot === 'hand' && !this.isProbingBody);
+                // Presence pacing yields to the probe the same way.
+                const primarySlot = pacing
+                    ? (pacing.primary || this.isProbingBody)
+                    : (!interleaved || slot === 'primary' || this.isProbingBody);
+                const handSlot = pacing
+                    ? (pacing.hand && !this.isProbingBody)
+                    : (!interleaved || (slot === 'hand' && !this.isProbingBody));
 
                 try {
                     // Head Mode (Primary) - Only run if NOT probing body
@@ -1679,10 +1956,19 @@ class SharedCameraManager {
                         // gate above already did the throttling). Legacy: every Nth frame.
                         const shouldProcess = this._handPrimaryMode
                             || interleaved
+                            || !!pacing
                             || (++this._handFrameCounter >= this._handFrameSkip && (this._handFrameCounter = 0, true));
                         if (shouldProcess) {
                             try {
-                                await this._timedSend('hand', this.hands, frameSource);
+                                const handOutcome = await this._timedSend('hand', this.hands, frameSource);
+                                if (pacing) {
+                                    // Worker outcomes carry resultCount; the inline shim
+                                    // does not, so read the detector it just updated.
+                                    const n = Number.isFinite(handOutcome?.resultCount)
+                                        ? handOutcome.resultCount
+                                        : (this._dep('handDetector')?.state?.handCount || 0);
+                                    this._handPacer?.observe(performance.now(), n);
+                                }
                             } catch (handErr) {
                                 const msg = handErr?.message || String(handErr);
                                 if (this._isFatalFrameError(handErr)) {
@@ -1724,6 +2010,11 @@ class SharedCameraManager {
      */
     reportConfidence(confidence) {
         this.currentConfidence = confidence;
+        // Head↔body auto-switch presumes the pumped loop (a body probe inside face mode,
+        // both models fed from one <video>). Native capture runs only the primary's
+        // channel, so the policy is gated off rather than deleted. Confidence is still
+        // recorded for diagnostics.
+        if (this._nativeCapture) return;
         const now = performance.now();
 
         // If Manual Mode is set, we still process the confidence but we treat
@@ -1877,8 +2168,12 @@ class SharedCameraManager {
      * Get current status
      */
     getStatus() {
+        // `this.active` means models are ready and stays true after a normal STOP.
+        // Public camera status must follow live ownership so cached models do not
+        // leave the camera toggle reporting On after capture has been released.
+        const live = this._machine.state.live;
         return {
-            active: this.active,
+            active: live.primary !== null || live.overlay,
             mode: this.activeMode,
             phase: this.phase,
             live: { ...this._machine.state.live },

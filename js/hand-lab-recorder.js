@@ -33,6 +33,10 @@ const FLUSH_MS = 1000;
 /** OptiGest captures at ~5 fps; enough to see a hand vanish, cheap to store. */
 const FRAME_MS = 200;
 const FRAME_WIDTH = 640;
+/** How much hand history "missed it" saves. A motion lasts under a second. */
+const MISS_WINDOW_MS = 3000;
+/** Shape version of a miss fixture (js/lib/miss-replay.js reads it). */
+const MISS_FIXTURE_VERSION = 1;
 
 const num = (x) => (typeof x === 'number' && isFinite(x)) ? x : null;
 const r2 = (x) => (num(x) === null ? null : Math.round(x * 100) / 100);
@@ -69,10 +73,17 @@ const NEGATIVES = {
     },
 };
 
-/** The poses a guided run walks through, bracketed by the two negatives. */
+/**
+ * The poses a guided run walks through, then the motions (hand-motion-channel.js),
+ * bracketed by the two negatives. Each motion's HOLD window is 8 s of repeating
+ * it; the replay counts events per window, so the held poses and negatives double
+ * as the motions' false-positive test.
+ */
 const GUIDED_SEQUENCE = [
     'away', 'idle', 'openPalm', 'fist', 'point', 'peace', 'horns',
-    'thumbsUp', 'thumbsDown', 'pray', 'idle', 'away',
+    'thumbsUp', 'thumbsDown', 'pray',
+    'swipe', 'pinch', 'spread', 'gather',
+    'idle', 'away',
 ];
 const READY_MS = 3000;
 const HOLD_MS = 8000;
@@ -108,10 +119,22 @@ export class HandLabRecorder {
         const bus = window.MotionBus;
         if (!bus?.subscribe) return;
 
+        // Motion events as the live channel fired them, so a replay can be
+        // checked against what actually happened on the day.
+        bus.subscribe('handMotion', (motion) => {
+            if (!motion?.events?.length) return;
+            this._push({
+                ch: 'motion',
+                t: r2(motion.t),
+                ev: motion.events.map((e) => ({ type: e.type, dir: e.dir, hand: e.handId })),
+            });
+        });
+
         // Raw detector output. `null` is the detector saying "no hands, and I
         // have stopped broadcasting" — worth a row of its own, since a pose that
         // "falls to 0 hands" is either this or MediaPipe returning nothing.
         bus.subscribe('handPose', (hand) => {
+            this._remember(hand);
             if (!hand) {
                 this._push({ ch: 'hand', nul: true });
                 return;
@@ -132,6 +155,9 @@ export class HandLabRecorder {
                 // accumulating megabytes of landmarks nobody asked for.
                 lm1: this.runId ? flatLandmarks(hand.landmarks) : undefined,
                 lm2: this.runId ? flatLandmarks(hand.landmarks2) : undefined,
+                // Metric 3D landmarks (pinch prefers them), same hand order.
+                wl1: this.runId ? flatLandmarks(hand.worldLandmarks) : undefined,
+                wl2: this.runId ? flatLandmarks(hand.worldLandmarks2) : undefined,
             });
         });
 
@@ -355,5 +381,58 @@ export class HandLabRecorder {
         a.download = `hand-lab-${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`;
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }
+
+    /**
+     * The last MISS_WINDOW_MS of hand frames, kept whether or not a run is
+     * recording, so "missed it" works at any moment. Full landmarks: ~20 Hz x 3 s
+     * x two hands is about 15k numbers.
+     */
+    _remember(hand) {
+        const now = performance.now();
+        this.recent ??= [];
+        this.recent.push(hand ? {
+            t: r2(hand.t ?? hand.timestamp ?? now),
+            n: hand.handCount ?? 0,
+            conf: r2(hand.confidence),
+            lm1: flatLandmarks(hand.landmarks), lm2: flatLandmarks(hand.landmarks2),
+            wl1: flatLandmarks(hand.worldLandmarks), wl2: flatLandmarks(hand.worldLandmarks2),
+        } : { t: r2(now), n: 0 });
+        const cutoff = now - MISS_WINDOW_MS;
+        while (this.recent.length && this.recent[0].t < cutoff) this.recent.shift();
+    }
+
+    /**
+     * Save the last 3 s as a miss fixture: "I did `kind` and it did not fire".
+     * Move the file into tests/fixtures/misses/ and tests/hand-misses.test.js
+     * replays it (js/lib/miss-replay.js) — a todo until marked status 'fixed'.
+     * @returns {object} the fixture
+     */
+    captureMiss(kind) {
+        const stats = window.SharedCameraManager?.getTrackingStats?.();
+        const fixture = {
+            v: MISS_FIXTURE_VERSION,
+            kind,
+            label: this.labels[kind] ?? kind,
+            status: 'open',
+            capturedAt: new Date().toISOString(),
+            windowMs: MISS_WINDOW_MS,
+            ua: navigator.userAgent,
+            handHz: stats?.achieved?.hand?.hz ?? null,
+            scheduler: stats?.scheduler ?? null,
+            pacing: stats?.pacing ?? null,
+            // What the recognizers themselves said at the moment of the miss.
+            poses: window.HandPoses?.status?.() ?? null,
+            motion: window.HandMotion?.status?.() ?? null,
+            rows: [...(this.recent ?? [])],
+        };
+        this._push({ ch: 'meta', event: 'miss', kind, frames: fixture.rows.length });
+        const blob = new Blob([JSON.stringify(fixture)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `miss-${kind}-${fixture.capturedAt.replace(/[:.]/g, '-')}.json`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        return fixture;
     }
 }
