@@ -63,6 +63,6 @@ test('live relaxed hand: hanging in view, back to the camera, matches nothing', 
     assert.deepEqual(matchingPoses(hand('restHanging')), []);
 });
 
-test('live fist: known gap — a thumb across the fist reads as thumbs-up', { todo: 'thumb needs its own test' }, () => {
+test('live fist: a thumb across the fist is not a thumbs-up (thumbReach)', () => {
     assert.deepEqual(matchingPoses(hand('fist')), ['fist']);
 });

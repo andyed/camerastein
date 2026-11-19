@@ -664,10 +664,30 @@ class HandPoseDetector {
         const dy = thumbTip.y - palmY;
         const dist = Math.sqrt(dx * dx + dy * dy);
 
-        // Normalize: ~0.02 (tucked) to ~0.15 (extended)
-        const normalized = Math.max(0, Math.min(1, (dist - 0.02) / 0.13));
+        // Legacy: ~0.02 (tucked) to ~0.15 (extended) in IMAGE units, so the value
+        // depends on distance to the camera — a close fist read 1.00, the same as a
+        // thumbs-up (camerastein guided run 2026-09-24, palm length 0.24).
+        // __handExtensionScaleFree: the same distance in PALM LENGTHS (wrist →
+        // middle MCP). Measured on that run: fist 0.71, open palm 0.77, point
+        // 1.01, thumbs-down 1.69, thumbs-up 2.08, so (r - 0.8) / 1.0 puts the
+        // thumb-confirm floor (0.45) at 1.25 palm lengths, clear of both sides.
+        // Off by default: Psychodeli's AE maps thumbExtension onto visuals, and
+        // rescaling it there is a product decision.
+        const normalized = this._scaleFreeExtension()
+            ? Math.max(0, Math.min(1, (this._reachInPalms(dist, wrist, middleMcp) - 0.8) / 1.0))
+            : Math.max(0, Math.min(1, (dist - 0.02) / 0.13));
 
         this.state.thumbExtension = this._smooth(this.state.thumbExtension, normalized);
+    }
+
+    _scaleFreeExtension() {
+        return typeof window !== 'undefined' && window.__handExtensionScaleFree === true;
+    }
+
+    /** A wrist-to-tip distance in palm lengths (wrist → middle MCP, image plane). */
+    _reachInPalms(dist, wrist, middleMcp) {
+        const palm = Math.hypot(middleMcp.x - wrist.x, middleMcp.y - wrist.y);
+        return palm > 1e-6 ? dist / palm : 0;
     }
 
     /**
@@ -856,7 +876,12 @@ class HandPoseDetector {
             const dx = tip.x - palmX;
             const dy = tip.y - palmY;
             const dist = Math.sqrt(dx * dx + dy * dy);
-            const normalized = Math.max(0, Math.min(1, (dist - 0.02) / 0.13));
+            // Scale-free (see _extractThumbExtension): long fingers measured
+            // 1.2-1.5 palm lengths extended and 0.04-0.80 curled on the 2026-09-24
+            // run, so (r - 0.7) / 0.6 puts the finger-hold floor (0.6) at 1.06.
+            const normalized = this._scaleFreeExtension()
+                ? Math.max(0, Math.min(1, (this._reachInPalms(dist, wrist, middleMcp) - 0.7) / 0.6))
+                : Math.max(0, Math.min(1, (dist - 0.02) / 0.13));
 
             const key = this._extKeys[f];
             if (key) {

@@ -43,16 +43,13 @@ const num = (x) => (typeof x === 'number' && isFinite(x)) ? x : 0;
  * Long fingers are measured by wrist reach (`fingerReach`, OptiGest's rule).
  * On a live guided run (2026-09-24) extended fingers read ≥ 0.93 and curled
  * ones ≤ 0.41 in every pose; synthetic hands read 0.96–1.00 and 0.19–0.39. The
- * EXTENDED and CURLED bands below sit inside that gap. The thumb is still
- * measured by straightness, and THUMB_TUCKED is still calibrated on fixtures
- * only — a real thumb across a fist reads 0.84–0.92, which is why fist does not
- * yet fire live (see tests/hand-live-fixtures.test.js).
+ * EXTENDED and CURLED bands below sit inside that gap. The thumb's straightness
+ * does not separate a fist from a thumbs-up (a real thumb across a fist reads
+ * 0.84–0.92 straight), so those poses gate on its REACH instead (THUMB_IN and
+ * THUMB_CLEAR below; tests/hand-live-fixtures.test.js holds the live fist).
  */
 const EXTENDED = Object.freeze({ enter: 0.85, exit: 0.72, full: 1.0, dir: 1 });
 const CURLED = Object.freeze({ enter: 0.55, exit: 0.66, full: 0.15, dir: -1 });
-// The thumb folds across the palm rather than into it, so it keeps more of its
-// length when tucked than a finger does — a looser bar, from the same fixtures.
-const THUMB_TUCKED = Object.freeze({ enter: 0.55, exit: 0.68, full: 0.30, dir: -1 });
 /**
  * Not edge-on — a precondition of every pose here, not a stylistic preference.
  *
@@ -80,10 +77,19 @@ const FACING = Object.freeze({ enter: 0.45, exit: 0.30, full: 0.85, dir: 1 });
  */
 const NOT_PITCHED = Object.freeze({ enter: 0.9, exit: 0.75, full: 1.6, dir: 1 });
 const THUMB_UP = Object.freeze({ enter: 0.45, exit: 0.25, full: 1.0, dir: 1 });
+// Thumb tip clear of the palm, in palm lengths (hand-pose-features thumbReach).
+// Live 2026-09-24: fist 0.54 against thumbs-down 1.66 and thumbs-up 2.01. The
+// synthetic hand (makeHand) splays its thumb at palm level and reaches only 1.01
+// as a thumbs-up and 0.39 as a fist, so the bands sit where both kinds agree.
+// Their enter bounds do not overlap (0.75 / 0.9), which keeps fist and the two
+// thumbs poses mutually exclusive.
+const THUMB_CLEAR = Object.freeze({ enter: 0.9, exit: 0.8, full: 1.8, dir: 1 });
+const THUMB_IN = Object.freeze({ enter: 0.75, exit: 0.85, full: 0.4, dir: -1 });
 const THUMB_DOWN = Object.freeze({ enter: -0.45, exit: -0.25, full: -1.0, dir: -1 });
 
 const label = {
     palmLengthRatio: 'not pitched',
+    thumbReach: 'thumb clear',
     thumbExtension: 'thumb', indexExtension: 'index', middleExtension: 'middle',
     ringExtension: 'ring', pinkyExtension: 'pinky',
 };
@@ -136,8 +142,11 @@ export const HAND_POSE_SPECS = Object.freeze({
         title: 'Fist',
         cue: 'All four fingers curled, thumb tucked across them.',
         curled: ['index', 'middle', 'ring', 'pinky'],
-        // The tucked thumb is what keeps a thumbs-up from also being a fist.
-        extra: { thumbExtension: THUMB_TUCKED, aspect: FACING },
+        // The thumb kept IN is what keeps a thumbs-up from also being a fist.
+        // Measured by reach, not straightness: a real thumb laid across a fist
+        // is straight (0.84-0.92), so THUMB_TUCKED on thumbExtension rejected
+        // every live fist (camerastein guided run 2026-09-24).
+        extra: { thumbReach: THUMB_IN, aspect: FACING },
     }),
     point: definePose('point', {
         title: 'Point',
@@ -165,14 +174,14 @@ export const HAND_POSE_SPECS = Object.freeze({
         cue: 'Fist with the thumb out and pointing up, hand facing the camera.',
         extended: ['thumb'],
         curled: ['index', 'middle', 'ring', 'pinky'],
-        extra: { thumbUpness: THUMB_UP, aspect: FACING },
+        extra: { thumbUpness: THUMB_UP, thumbReach: THUMB_CLEAR, aspect: FACING },
     }),
     thumbsDown: definePose('thumbsDown', {
         title: 'Thumbs down',
         cue: 'Fist with the thumb out and pointing down, hand facing the camera.',
         extended: ['thumb'],
         curled: ['index', 'middle', 'ring', 'pinky'],
-        extra: { thumbUpness: THUMB_DOWN, aspect: FACING },
+        extra: { thumbUpness: THUMB_DOWN, thumbReach: THUMB_CLEAR, aspect: FACING },
     }),
 });
 

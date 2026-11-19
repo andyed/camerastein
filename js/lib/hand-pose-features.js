@@ -314,6 +314,13 @@ export function handShape(landmarks) {
     const thumbAxis = (thumbCmc && thumbTip) ? unit2(thumbCmc, thumbTip) : null;
     shape.thumbUpness = thumbAxis ? -thumbAxis.y : 0;
 
+    // How far the thumb tip stands clear of the palm, in palm lengths. A thumb
+    // laid across a fist is STRAIGHT (thumbExtension 0.84-0.92 live) and points
+    // up, so straightness and direction alone call a fist a thumbs-up; reach
+    // tells them apart. Live fixtures 2026-09-24: fist 0.54, open palm 0.71,
+    // point 0.93, thumbs-down 1.66, thumbs-up 2.01.
+    shape.thumbReach = thumbTip ? dist2(thumbTip, frame.center) / frame.scale : 0;
+
     return shape;
 }
 
