@@ -89,6 +89,10 @@ class SharedCameraManager {
         // Alternates primary/hand across paced ticks instead of starving hands to
         // ~0.83Hz on mobile. Monotonic tick counter drives the slot phase.
         this._pacedTick = 0;
+        // Presence pacing (js/lib/hand-pacing.js), used only while
+        // window.__handPacing === 'presence'. Created lazily so a host that never
+        // loads hand-pacing.js pays nothing and keeps the schedulers above.
+        this._handPacer = null;
         // Per-channel inference latency + achieved rate. Always on: it is the only
         // way mobile pacing is observable (headless has no camera), and it is what
         // validates the interleave change on a real device via getTrackingStats().
@@ -772,11 +776,13 @@ class SharedCameraManager {
         if (fromHand && !toHand) {
             this._handOverlayCallback = null;
             this._handFrameCounter = 0;
+            this._handPacer?.reset?.();
             this._dep('handDetector')?._deactivate?.();
             this._dep('debugManager')?.logTransition?.('hand', 'overlay-stopped');
         } else if (toHand && !fromHand) {
             this._handOverlayCallback = this._dep('handDetector')?._onResults || null;
             this._handFrameCounter = 0;
+            this._handPacer?.reset?.();
             this._dep('handDetector')?._activate?.();
             this._dep('debugManager')?.logTransition?.('hand', 'overlay-started', { frameSkip: this._handFrameSkip });
         }
@@ -1464,6 +1470,33 @@ class SharedCameraManager {
                 this._trackingStats?.record?.(channel, roundTripMs);
             }
         }
+        // Returned for the presence pacer, which reads outcome.resultCount (hands
+        // in the result). Existing callers ignore it.
+        return outcome;
+    }
+
+    /**
+     * Presence pacing (js/lib/hand-pacing.js): hands every tick while one was seen
+     * recently, the primary on a watchdog; hands scouting otherwise. Opt-in with
+     * window.__handPacing = 'presence'. Like interleave, it only applies when hands
+     * share the pumped loop with a primary detector, and it takes precedence over
+     * interleave when both are set.
+     */
+    _presencePacingActive() {
+        return window.__handPacing === 'presence'
+            && !!window.CameraHandPacing
+            && !this._nativeCapture
+            && this._handOverlayActive
+            && !this._handSuspended
+            && !this._handPrimaryMode
+            && !!this.activeMode;
+    }
+
+    _getHandPacer() {
+        if (!this._handPacer && window.CameraHandPacing) {
+            this._handPacer = window.CameraHandPacing.createHandPacer(window.__handPacingOptions || undefined);
+        }
+        return this._handPacer;
     }
 
     /**
@@ -1488,15 +1521,20 @@ class SharedCameraManager {
     /** Planned vs achieved rates — the readout for validating pacing changes on-device. */
     getTrackingStats() {
         const policy = window.CameraResourcePolicy;
-        const interleaved = this._interleaveActive();
-        const planned = policy?.plannedRates?.(
-            this.targetFPS,
-            interleaved ? 'interleave' : 'skip',
-            window.__handInterleaveRatio ?? 2,
-            this._handFrameSkip
-        ) || null;
+        const presence = this._presencePacingActive() && !!this._handPacer;
+        const interleaved = !presence && this._interleaveActive();
+        const planned = presence
+            ? this._handPacer.plannedRates(this.targetFPS)
+            : (policy?.plannedRates?.(
+                this.targetFPS,
+                interleaved ? 'interleave' : 'skip',
+                window.__handInterleaveRatio ?? 2,
+                this._handFrameSkip
+            ) || null);
         return {
-            scheduler: interleaved ? 'interleave' : 'skip',
+            scheduler: presence ? 'presence' : (interleaved ? 'interleave' : 'skip'),
+            // Presence pacing's phase ('present' | 'scouting') and transition count.
+            pacing: presence ? this._handPacer.state() : null,
             targetFPS: this.targetFPS,
             constrained: this._resourceConstrained,
             planned,
@@ -1846,7 +1884,9 @@ class SharedCameraManager {
                 // Interleave: this paced tick belongs to EITHER the primary detector or
                 // hands, never both. Without it, hands are starved to targetFPS/skip
                 // (~0.83Hz on mobile). The slot phase advances once per paced tick.
-                const interleaved = this._interleaveActive();
+                // Presence pacing, when on, decides both slots and overrides interleave.
+                const pacing = this._presencePacingActive() ? this._getHandPacer()?.tick(now) : null;
+                const interleaved = !pacing && this._interleaveActive();
                 const slot = interleaved
                     ? (window.CameraResourcePolicy?.interleaveSlot(
                         this._pacedTick++, window.__handInterleaveRatio ?? 2) || 'primary')
@@ -1854,8 +1894,13 @@ class SharedCameraManager {
                 // The body probe assumes CONSECUTIVE pose frames for its velocity math
                 // (dt ~50ms, see _beginBodyProbe). Interleaving would halve that and
                 // skew wristVelocity, so the probe window suspends interleave entirely.
-                const primarySlot = !interleaved || slot === 'primary' || this.isProbingBody;
-                const handSlot = !interleaved || (slot === 'hand' && !this.isProbingBody);
+                // Presence pacing yields to the probe the same way.
+                const primarySlot = pacing
+                    ? (pacing.primary || this.isProbingBody)
+                    : (!interleaved || slot === 'primary' || this.isProbingBody);
+                const handSlot = pacing
+                    ? (pacing.hand && !this.isProbingBody)
+                    : (!interleaved || (slot === 'hand' && !this.isProbingBody));
 
                 try {
                     // Head Mode (Primary) - Only run if NOT probing body
@@ -1911,10 +1956,19 @@ class SharedCameraManager {
                         // gate above already did the throttling). Legacy: every Nth frame.
                         const shouldProcess = this._handPrimaryMode
                             || interleaved
+                            || !!pacing
                             || (++this._handFrameCounter >= this._handFrameSkip && (this._handFrameCounter = 0, true));
                         if (shouldProcess) {
                             try {
-                                await this._timedSend('hand', this.hands, frameSource);
+                                const handOutcome = await this._timedSend('hand', this.hands, frameSource);
+                                if (pacing) {
+                                    // Worker outcomes carry resultCount; the inline shim
+                                    // does not, so read the detector it just updated.
+                                    const n = Number.isFinite(handOutcome?.resultCount)
+                                        ? handOutcome.resultCount
+                                        : (this._dep('handDetector')?.state?.handCount || 0);
+                                    this._handPacer?.observe(performance.now(), n);
+                                }
                             } catch (handErr) {
                                 const msg = handErr?.message || String(handErr);
                                 if (this._isFatalFrameError(handErr)) {
