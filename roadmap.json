@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "product": "Camerastein",
-  "updated": "2026-11-11",
+  "updated": "2026-11-18",
   "read_me": [
     "What this project is meant to carry next. Read this before answering any question about the roadmap.",
     "This repository is public. Everything in this file is published once it is committed and pushed.",
@@ -24,6 +24,17 @@
       "asked": "Andy, 2026-11-11",
       "shared_with": ["Psychodeli+"],
       "notes": "The write-up is docs/RELATIVE_DEPTH_MINI_SPEC.md in Psychodeli+'s repository; no copy is in this one. Nothing is built. The capture tool and the replay tool are already open in TODO.md, and docs/TESTING_PLAN.md describes them. The write-up names a depth model in the browser as one source of the signal; it has not been tried."
+    },
+    "hands-first-tracking": {
+      "title": "Track hands fast enough for motion gestures, not only held poses",
+      "what": "Give hands their own frame budget while someone is gesturing: run hand tracking in a worker at about 30 Hz while a hand is in view and about 8 Hz after a couple of seconds without one, instead of every 6th tick (about 2.8 Hz on desktop, 0.83 Hz on mobile). At that rate swipes, flicks, pinch-and-release and two-hand moves become possible next to the held poses. With it: keep MediaPipe's world landmarks for 3D finger bends, and smooth landmarks before measuring velocity.",
+      "spec": null,
+      "docs": [],
+      "state": "idea",
+      "paid": null,
+      "asked": "Andy, 2026-11-18: \"this sounds like a foundational camerastein change eh?\", then \"Yes, add the item\"",
+      "shared_with": [],
+      "notes": "Held poses only is a consequence of the sampling rate: js/lib/held-pose-recognizer.js says a swipe cannot survive about 2.8 Hz. The README's attention arbiter (hands scout near 2 Hz, then 8 to 12 Hz while a gesture is sustained) and TODO.md's High-precision hand mode are the same direction. Evidence it works: toaster (github.com/StopBanning/toaster, MIT), a music visualizer with a dozen hand gestures. Its tracking loop is renderer/tracking.js (worker, one 640 px frame in flight, 30 Hz with hands, 8 Hz after 2 s without), smoothing is renderer/smooth.js (One Euro per landmark), and its motion gestures are in renderer/portal.js and renderer/lens.js. Camerastein's held-pose engine already has the guards toaster uses (dwell, release hysteresis, dropout coasting, refractory, palm-scale thresholds). Open: what 30 Hz hands cost next to a WebGL render; camerastein's per-frame P50/P95/P99 stats measure it. Nothing is built."
     }
   },
   "lines": [
@@ -36,6 +47,7 @@
     }
   ],
   "unplaced": [
-    { "feature": "relative-depth", "why": "Andy asked for it on this roadmap on 2026-11-11 and named no date." }
+    { "feature": "relative-depth", "why": "Andy asked for it on this roadmap on 2026-11-11 and named no date." },
+    { "feature": "hands-first-tracking", "why": "Andy asked for it on this roadmap on 2026-11-18 and named no date." }
   ]
 }
