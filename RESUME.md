@@ -1,6 +1,6 @@
 # Resume — hands-first tracking
 
-**Branch:** `feat/hands-first-tracking` (unpushed, cut from `main` 660c863).
+**Landed:** merged to `main` as a5217de and pushed, 2026-11-19 (branch `feat/hands-first-tracking` deleted).
 `npm test` → 156 pass, 0 todo.
 **Roadmap:** `hands-first-tracking`, `segmentation-channel` (roadmap.json on `main`).
 **Docs:** `docs/HAND_GESTURE_SUITE.md`, `docs/HAND_GESTURE_PRAY.md`, `docs/PRAY_TEST_SCRIPT.md`
