@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "product": "Camerastein",
-  "updated": "2026-11-18",
+  "updated": "2026-11-19",
   "read_me": [
     "What this project is meant to carry next. Read this before answering any question about the roadmap.",
     "This repository is public. Everything in this file is published once it is committed and pushed.",
@@ -34,7 +34,18 @@
       "paid": null,
       "asked": "Andy, 2026-11-18: \"this sounds like a foundational camerastein change eh?\", then \"Yes, add the item\"",
       "shared_with": [],
-      "notes": "Held poses only is a consequence of the sampling rate: js/lib/held-pose-recognizer.js says a swipe cannot survive about 2.8 Hz. The README's attention arbiter (hands scout near 2 Hz, then 8 to 12 Hz while a gesture is sustained) and TODO.md's High-precision hand mode are the same direction. Evidence it works: toaster (github.com/StopBanning/toaster, MIT), a music visualizer with a dozen hand gestures. Its tracking loop is renderer/tracking.js (worker, one 640 px frame in flight, 30 Hz with hands, 8 Hz after 2 s without), smoothing is renderer/smooth.js (One Euro per landmark), and its motion gestures are in renderer/portal.js and renderer/lens.js. Camerastein's held-pose engine already has the guards toaster uses (dwell, release hysteresis, dropout coasting, refractory, palm-scale thresholds). Open: what 30 Hz hands cost next to a WebGL render; camerastein's per-frame P50/P95/P99 stats measure it. Nothing is built."
+      "notes": "Held poses only is a consequence of the sampling rate: js/lib/held-pose-recognizer.js says a swipe cannot survive about 2.8 Hz. The README's attention arbiter (hands scout near 2 Hz, then 8 to 12 Hz while a gesture is sustained) and TODO.md's High-precision hand mode are the same direction. Evidence it works: toaster (github.com/StopBanning/toaster, MIT), a music visualizer with a dozen hand gestures. Its tracking loop is renderer/tracking.js (worker, one 640 px frame in flight, 30 Hz with hands, 8 Hz after 2 s without), smoothing is renderer/smooth.js (One Euro per landmark), and its motion gestures are in renderer/portal.js and renderer/lens.js. Camerastein's held-pose engine already has the guards toaster uses (dwell, release hysteresis, dropout coasting, refractory, palm-scale thresholds). Open: what 30 Hz hands cost next to a WebGL render; camerastein's per-frame P50/P95/P99 stats measure it. Built 2026-11-19 on branch feat/hands-first-tracking (a76affa..39530a7, not merged): the Psychodeli worker transport synced in, presence pacing (hands 2.5 -> 15.2 Hz beside a face, headless), world landmarks, a One Euro smoother, swipe / pinch / spread / gather, thumb reach for fist vs thumbs-up, and 'missed it' fixtures. Not yet shown: the motions on a live guided run."
+    },
+    "segmentation-channel": {
+      "title": "A person mask as a camera signal",
+      "what": "Publish where the person is, as a low-resolution mask from MediaPipe's selfie segmenter, beside the landmark channels, so consumers can cut the performer out, use the silhouette as a shape, or measure motion inside it. Lazy: it loads nothing until something subscribes.",
+      "spec": null,
+      "docs": [],
+      "state": "idea",
+      "paid": null,
+      "asked": "Andy, 2026-11-18: \"go big, go broad, take inspiration from toaster on many dimensions\"",
+      "shared_with": [],
+      "notes": "From toaster (github.com/StopBanning/toaster, MIT; renderer/segcam.js, track-worker.js), which builds its camera looks on this model and runs it on the CPU because the GPU delegate froze the picture during setup. Built 2026-11-19 on branch feat/hands-first-tracking (39530a7, not merged): MotionBus personMask from its own worker at about 10 Hz on 256 px frames, 6.1 ms p50 headless, plus a cut-out preview behind the header's mask button. Psychodeli+ would take it once a visual use is chosen."
     }
   },
   "lines": [
@@ -48,6 +59,7 @@
   ],
   "unplaced": [
     { "feature": "relative-depth", "why": "Andy asked for it on this roadmap on 2026-11-11 and named no date." },
-    { "feature": "hands-first-tracking", "why": "Andy asked for it on this roadmap on 2026-11-18 and named no date." }
+    { "feature": "hands-first-tracking", "why": "Andy asked for it on this roadmap on 2026-11-18 and named no date." },
+    { "feature": "segmentation-channel", "why": "Proposed by Claude in the toaster plan Andy approved on 2026-11-19; no date named." }
   ]
 }
