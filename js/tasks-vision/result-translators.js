@@ -63,10 +63,12 @@ export function translatePoseResults(tasksResult) {
  */
 export function translateHandResults(tasksResult) {
     if (!tasksResult?.landmarks?.length) {
-        return { multiHandLandmarks: [], multiHandedness: [] };
+        return { multiHandLandmarks: [], multiHandWorldLandmarks: [], multiHandedness: [] };
     }
     return {
         multiHandLandmarks: tasksResult.landmarks,
+        // Index-aligned with multiHandLandmarks; empty when the provider has none.
+        multiHandWorldLandmarks: tasksResult.worldLandmarks || [],
         multiHandedness: (tasksResult.handedness || []).map(h =>
             Array.isArray(h) && h.length > 0 ? h[0] : { score: 0.5 }
         )

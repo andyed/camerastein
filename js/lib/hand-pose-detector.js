@@ -322,6 +322,8 @@ class HandPoseDetector {
             // the previous frame's landmarks still attached).
             this.state.landmarks = null;
             this.state.landmarks2 = null;
+            this.state.worldLandmarks = null;
+            this.state.worldLandmarks2 = null;
 
             // No hand → thumb gesture inactive; let any in-progress charge bleed off
             // (decays the dwell so a momentary occlusion doesn't bank progress).
@@ -389,6 +391,12 @@ class HandPoseDetector {
         } else {
             this.state.landmarks2 = null;
         }
+        // Metric 3D landmarks, same hand order as landmarks / landmarks2. Null when
+        // the provider sends none (legacy MediaPipe Hands, native iOS).
+        const world = results.multiHandWorldLandmarks || [];
+        const toXYZ = (h) => (h && h.length ? Array.from(h, lm => ({ x: lm.x, y: lm.y, z: lm.z || 0 })) : null);
+        this.state.worldLandmarks = toXYZ(world[dominantIdx]);
+        this.state.worldLandmarks2 = hands.length === 2 ? toXYZ(world[1 - dominantIdx]) : null;
 
         // ── Extract signals from dominant hand ──
         this._extractFingerSpread(dominant);
@@ -1361,6 +1369,8 @@ class HandPoseDetector {
         this.state.dominantFinger = 0;
         this.state.landmarks = null;
         this.state.landmarks2 = null;
+        this.state.worldLandmarks = null;
+        this.state.worldLandmarks2 = null;
     }
 
     /**

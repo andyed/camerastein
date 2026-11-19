@@ -159,6 +159,10 @@ export function poseDTO(result) {
 export function handDTO(result) {
     return {
         landmarks: (result?.landmarks || []).map((h) => h.map(pt)),
+        // Metric 3D landmarks (metres, origin at the hand's centre). Additive:
+        // finger bends judged in 3D do not depend on the hand's angle to the
+        // camera the way image-plane landmarks do (toaster gestures.js:13-19).
+        worldLandmarks: (result?.worldLandmarks || []).map((h) => h.map(pt)),
         handedness: (result?.handedness || []).map((h) => (h || []).map((c) => ({
             score: c.score, categoryName: c.categoryName, index: c.index,
         }))),
