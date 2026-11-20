@@ -31,6 +31,25 @@
   before changing thresholds. After recognition passes here, audition
   Psychodeli Self separately with music for visual amplitude and timing.
 
+- [ ] **Hands testing session: motions, held poses and the person mask on live hands.**
+  Nothing has shown the 2026-11-19 hands-first work (a5217de) on real hands yet.
+  Front-lit, plain background. Run `node scripts/hand-log-sink.mjs`, open
+  `?tasks-vision&handlog=http://127.0.0.1:8792`, enable **Hands**, open the
+  hands panel and run the guided sequence (poses, then swipe, pinch, spread,
+  gather). Do each motion three times at a normal pace, then once slowly.
+  Negative controls: reaching for the mouse, scratching the face, waving while
+  talking and a hand resting in view must not swipe or pinch; holding a pinch
+  must fire once, not repeat. Re-test the carried-over misses: pray backlit,
+  horns as index plus pinky (not bull horns), and the backs-of-hands pray false
+  positive. Read tracking stats with a hand in view and without one (expect
+  about 15 Hz vs about 4 Hz scouting). Press **m** on every gesture that
+  should have fired and did not, and move each `miss-*.json` into
+  `tests/fixtures/misses/`. Afterwards run `node scripts/replay-hand-clip.mjs`
+  and `npm test`, and tune thresholds from the misses. Last, press the header's
+  mask button and check that the cut-out follows and hand/face rates hold.
+  Passing this unblocks porting presence pacing, the smoother and the motion
+  channel to Psychodeli.
+
 ## Bugs / Polish
 
 - [ ] **Remove legacy mode** — Make Tasks Vision the only path, remove A/B toggle and init.js legacy wiring.
